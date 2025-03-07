@@ -34,7 +34,7 @@ scene = mi.load_dict({
     },
     'bunny': {
         'type': 'obj',
-        'filename': '../geometry/bunny/bunny.obj',
+        'filename': 'model/bunny.obj',
         'to_world': mi.scalar_rgb.Transform4f().translate((0.0, -0.75, 0.0)).scale(12.0),
         'bsdf': {
             'type': 'diffuse',
