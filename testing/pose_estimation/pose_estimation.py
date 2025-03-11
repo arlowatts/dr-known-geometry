@@ -4,6 +4,9 @@ import matplotlib.pyplot as plt
 import random
 import math
 
+model_file_name = 'model/bunny.obj'
+iteration_count = 100
+
 # Set a mitsuba variant that supports differentiation
 mi.set_variant('llvm_ad_rgb')
 
@@ -32,9 +35,9 @@ scene = mi.load_dict({
             'sample_border': True,
         },
     },
-    'bunny': {
+    'model': {
         'type': 'obj',
-        'filename': 'model/bunny.obj',
+        'filename': model_file_name,
         'to_world': mi.scalar_rgb.Transform4f().translate((0.0, -0.75, 0.0)).scale(12.0),
         'bsdf': {
             'type': 'diffuse',
@@ -54,27 +57,22 @@ scene = mi.load_dict({
 })
 
 def main():
-    # Load the reference image
-    img_ref = get_img_ref()
-
     # Access the mesh vertex positions
     params = mi.traverse(scene)
-    vertex_positions = dr.unravel(mi.Point3f, params['bunny.vertex_positions'])
+    vertex_positions = dr.unravel(mi.Point3f, params['model.vertex_positions'])
 
     # Initialize the optimizer
     opt = init_opt()
 
-    # Apply the initial transformation
-    apply_transformation(params, opt, vertex_positions)
+    # Render the initial image
+    img_init = mi.render(scene)
 
-    # Set the hyper-parameters for the optimization process
-    iteration_count = 100
+    # Randomly rotate the model and render the reference image
+    apply_random_transformation(params, vertex_positions)
+    img_ref = mi.render(scene)
 
     # Keep a histogram of the loss function to visualize the optimization process
     loss_hist = []
-
-    # Render the initial image
-    img_init = mi.render(scene)
 
     for i in range(iteration_count):
 
@@ -101,29 +99,35 @@ def main():
 
     display_results(loss_hist, img_init, img, img_ref)
 
-# Load the reference (target) image
-def get_img_ref():
-    return mi.render(scene)
-
 # Initialize the optimizer with a high learning rate to intentionally skip
 # around at the beginning to reach a global minimum
 def init_opt():
-    opt = mi.ad.Adam(lr=0.25)
+    opt = mi.ad.Adam(lr=0.1)
+
+    # Initialize the rotation quaternion
+    opt['rotation'] = dr.auto.ad.Quaternion4f(0, 0, 0, 1)
+
+    return opt
+
+# Randomly rotate the vertices and update the parameters
+def apply_random_transformation(params, vertex_positions):
 
     # Choose a random rotation as an axis and an angle
     axis = mi.warp.square_to_uniform_sphere((random.random(), random.random()))
     angle = random.random() * 360
 
-    # Initialize the rotation quaternion
-    opt['rotation'] = dr.matrix_to_quat(mi.Transform4f().rotate(axis, angle).matrix)
+    transform = mi.Transform4f().rotate(axis, angle)
 
-    return opt
+    params['model.vertex_positions'] = dr.ravel(transform @ vertex_positions)
+    params.update()
 
 # Apply the transformation given in the optimizer to the vertex positions
 def apply_transformation(params, opt, vertex_positions):
+    opt['rotation'] = dr.normalize(opt['rotation'])
+
     transform = mi.Transform4f(dr.quat_to_matrix(opt['rotation']))
 
-    params['bunny.vertex_positions'] = dr.ravel(transform @ vertex_positions)
+    params['model.vertex_positions'] = dr.ravel(transform @ vertex_positions)
     params.update()
 
 # Display a histogram and three images in a figure
