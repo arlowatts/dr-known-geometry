@@ -179,7 +179,7 @@ def get_img_ref():
 
     # convert the image to single-channel floating-point and resample
     img_ref = img_ref.convert(pixel_format=mi.Bitmap.PixelFormat.Y, component_format=mi.Struct.Type.Float32)
-    img_ref = img_ref.resample([img_size, img_size])
+    img_ref = img_ref.resample([img_size, img_size], clamp=(0.0, 1.0))
 
     # convert the image to a two-dimensional tensor
     img_ref = mi.TensorXf(img_ref)[:, :, 0]
