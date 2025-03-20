@@ -3,13 +3,14 @@ import mitsuba as mi
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.ndimage as ndimage
+import sys
 
 # set a mitsuba variant that supports differentiation
 mi.set_variant('llvm_ad_mono')
 
 # define optimization parameters
-model_path = 'model/bunny.obj'
-img_ref_path = 'model/ref_01_cropped.png'
+model_path = sys.argv[1]
+img_ref_path = sys.argv[2]
 iteration_count = 100
 attempts_count = 100
 
