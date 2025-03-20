@@ -106,7 +106,7 @@ class ParameterOptimizer():
         return self.progress_images
 
     def render(self, scene, sensor, params):
-        return mi.render(scene, sensor=sensor, params=params, spp=32)
+        return mi.render(scene, sensor=sensor, params=params, spp=64)
 
     def create_scene(self, model, camera_positions):
         '''Create a Mitsuba scene with the given model filepath and resolution'''
@@ -120,11 +120,11 @@ class ParameterOptimizer():
             },
             'envmap': {
                 'type': 'envmap',
-                'bitmap': mi.Bitmap(np.ones((64, 32, 3), dtype=np.float32) * 0.5),
+                'bitmap': mi.Bitmap(np.ones((128, 64, 3), dtype=np.float32) * 0.5),
                 'scale': 1.0
             },
             'object': {
-                'to_world': mi.ScalarTransform4f.scale(1.0),
+                'to_world': mi.ScalarTransform4f.scale(10.0),
                 'bsdf': self.bsdf_parameters
             }
         }
@@ -164,6 +164,8 @@ class ParameterOptimizer():
 
 if __name__ == '__main__':
     model = "./testing/parameter_extraction/model/suzanne_blender_monkey.obj"
+    #model = "./geometry/bunny/bunny.obj"
+    #model = "./geometry/teapot/teapot.obj"
     #model = None
 
     # Load synthetic images
@@ -183,13 +185,13 @@ if __name__ == '__main__':
         'clearcoat': 0.0,
         'clearcoat_gloss': 0.0
     }
-    target_images = synthetic_data.create_scene(bsdf_parameters, model, (64, 64), [(0, 0, 5), (0, 0, -5)])
+    target_images = synthetic_data.create_scene(bsdf_parameters, model, (128, 128), [(0, 0, 5), (0, 0, -5)])
 
     # Load model parameters
     parameters = {
         'mitsuba_variant': 'cuda_ad_rgb',
         'model': model,
-        'resolution': (64, 64),
+        'resolution': (128, 128),
     }
 
     optimizer = ParameterOptimizer(target_images, parameters)

@@ -23,7 +23,7 @@ def create_scene(bsdf_parameters, model, resolution, camera_positions):
             'scale': 1.0
         },
         'object': {
-            'to_world': mi.ScalarTransform4f.scale(1.0),
+            'to_world': mi.ScalarTransform4f.scale(10.0),
             'bsdf': bsdf_parameters
         }
     }
