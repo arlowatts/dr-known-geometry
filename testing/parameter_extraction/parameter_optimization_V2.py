@@ -6,9 +6,13 @@ import numpy as np
 import random
 import math
 import time
+import asyncio
+import json
 
-import utils
-import synthetic_data
+from PIL import Image
+import os
+
+#import testing.parameter_extraction.synthetic_data as synthetic_data
 
 class ParameterOptimizer():
     def __init__(self, target_images, parameters):
@@ -24,7 +28,7 @@ class ParameterOptimizer():
             },
             'roughness': 0.5,
             'metallic': 0.5,
-            'spec_tint': 0.0,
+            'spec_tint': 0.5,
             'specular': 0.5,
             'anisotropic': 0.5,
             'sheen': 0.0,
@@ -38,26 +42,30 @@ class ParameterOptimizer():
                 'parameters': [
                     'object.bsdf.base_color.value'
                 ],
-                'percent': 0.2
+                'percent': 0.1
             },
             '2': {
                 'parameters': [
                     'object.bsdf.base_color.value',
-                    'envmap.data',
-                    'envmap.scale'
+                    #'envmap.data',
+                    #'envmap.scale'
                 ],
-                'percent': 0.6
+                'percent': 0.1
             },
             '3': {
                 'parameters': [
                     'object.bsdf.base_color.value',
-                    'envmap.data',
-                    'envmap.scale',
+                    #'envmap.data',
+                    #'envmap.scale',
                     'object.bsdf.roughness.value',
                     'object.bsdf.metallic.value',
                     'object.bsdf.spec_tint.value',
                     'object.bsdf.specular',
-                    'object.bsdf.anisotropic.value'
+                    'object.bsdf.anisotropic.value',
+                    # 'object.bsdf.sheen.value',
+                    # 'object.bsdf.sheen_tint.value',
+                    # 'object.bsdf.clearcoat.value',
+                    # 'object.bsdf.clearcoat_gloss.value'
                 ],
                 'percent': 1.0
             }
@@ -65,6 +73,8 @@ class ParameterOptimizer():
 
         self.progress_images = []
         self.losses = []
+
+        self.current_params = []
 
     def run(self, num_iterations):
         mi.set_variant(self.parameters['mitsuba_variant'])
@@ -95,10 +105,34 @@ class ParameterOptimizer():
             self.losses.append(loss)
             dr.backward(loss)
             opt.step()
+
+            # clip the bsdf parameters
+            for key in opt.keys():
+                opt[key] = dr.clip(opt[key], 0.0, 1.0)
+
             params.update(opt)
 
+
+            # store the current parameters
+            # create a dictionary with the current parameters for the current iteration
+            bsdf_params = {}
+            for key in params.keys():
+                # dont include envmap.data in the current_params
+                if 'envmap' not in key:
+                    if key == 'object.bsdf.base_color.value':
+                        bsdf_params['base_color'] = params[key].numpy().tolist()[0]
+                    else:
+                        bsdf_params[key] = params[key].numpy().tolist()[0]
+
+            current_params = {}
+            current_params[i+1] = {'bsdf_params': bsdf_params, 'loss': loss.numpy().tolist()[0]}
+
+            self.current_params.append(current_params)
+            # Use json.dumps to ensure valid JSON output
+            print(f'PARAMS={json.dumps(current_params)}')
+
             print("===============================================")
-            print(f'Stage {stage}, Optimizing {params.keys()}')
+            print(f'Stage {stage}, Optimizing {[key for key in params.keys()]}')
             print(f'Learning rate: {lr}')
             print(f'Iteration {i+1}/{num_iterations}: loss={loss}')
             print("===============================================")
@@ -162,63 +196,39 @@ class ParameterOptimizer():
         return list(self.optimization_stages.keys())[-1]
     
 
-if __name__ == '__main__':
-    model = "./testing/parameter_extraction/model/suzanne_blender_monkey.obj"
-    #model = "./geometry/bunny/bunny.obj"
-    #model = "./geometry/teapot/teapot.obj"
-    #model = None
+def optimize(variant, model, num_iterations):
+    mi.set_variant(variant)
+    resolution = (128, 128) 
 
-    # Load synthetic images
-    bsdf_parameters = {
-        'type': 'principled',
-        'base_color': {
-            'type': 'rgb',
-            'value': [random.uniform(0.0, 1.0), random.uniform(0.0, 1.0), random.uniform(0.0, 1.0)]
-        },
-        'roughness': random.uniform(0.0, 1.0),
-        'metallic': random.uniform(0.0, 1.0),
-        'spec_tint': random.uniform(0.0, 1.0),
-        'specular': random.uniform(0.0, 1.0),
-        'anisotropic': random.uniform(0.0, 1.0),
-        'sheen': 0.0,
-        'sheen_tint': 0.0,
-        'clearcoat': 0.0,
-        'clearcoat_gloss': 0.0
-    }
-    target_images = synthetic_data.create_scene(bsdf_parameters, model, (128, 128), [(0, 0, 5), (0, 0, -5)])
+    # load target images from folder "./testing/parameter_extraction/targets"
+    target_images = []
+    target_folder = "./testing/parameter_extraction/targets"
+    image_files = [f for f in os.listdir(target_folder) 
+                if f.lower().endswith(('.png', '.jpg', '.jpeg', '.hdr', '.exr'))]
+
+    for img_file in sorted(image_files):
+        print(f'Loading target image: {img_file}')
+        img_path = os.path.join(target_folder, img_file)
+        # Load image and convert to numpy array
+        img = np.array(Image.open(img_path)) / 255.0  # Normalize to [0, 1]
+
+        # convert to mitsuba bitmap
+        img = mi.Bitmap(img)
+        target_images.append(img)
 
     # Load model parameters
     parameters = {
-        'mitsuba_variant': 'cuda_ad_rgb',
+        'mitsuba_variant': variant,
         'model': model,
-        'resolution': (128, 128),
+        'resolution': resolution,
     }
 
     optimizer = ParameterOptimizer(target_images, parameters)
 
     # Run the optimization
     start_time = time.time()
-    progress_images = optimizer.run(100)
+    progress_images = optimizer.run(num_iterations)
     end_time = time.time()
     print(f'Elapsed time: {(end_time - start_time) / 60} minutes')
 
-    # Display target images
-    synthetic_data.visualize_target_images(target_images)
-
-    # Display every nth progress image
-    n = 20
-    fig, axs = plt.subplots(1, len(progress_images) // n, figsize=(10, 5))
-    for i, image in enumerate(progress_images):
-        if i % n == 0 or i == len(progress_images) - 1:
-            axs[i // n].imshow(image, cmap='gray')
-            axs[i // n].axis('off')
-            axs[i // n].set_title(f'Iteration {i}')
-
-    # Display the loss history
-    plt.figure()
-    plt.plot(optimizer.losses)
-    plt.xlabel('Iteration')
-    plt.ylabel('Loss')
-    plt.title('Loss history')
-
-    plt.show()
+    return progress_images

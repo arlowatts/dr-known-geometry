@@ -4,12 +4,28 @@ import mitsuba as mi
 import drjit as dr
 import matplotlib.pyplot as plt
 import random
+import time
 
-def create_scene(bsdf_parameters, model, resolution, camera_positions):
+def create_scene(model, resolution, camera_positions, save=False):
 
     mi.set_variant('cuda_ad_rgb')
     
-    '''Create a Mitsuba scene with the given model filepath and resolution'''
+    bsdf_parameters = {
+        'type': 'principled',
+        'base_color': {
+            'type': 'rgb',
+            'value': [random.uniform(0.0, 1.0), random.uniform(0.0, 1.0), random.uniform(0.0, 1.0)]
+        },
+        'roughness': random.uniform(0.0, 1.0),
+        'metallic': random.uniform(0.0, 1.0),
+        'spec_tint': random.uniform(0.0, 1.0),
+        'specular': random.uniform(0.0, 1.0),
+        'anisotropic': random.uniform(0.0, 1.0),
+        'sheen': random.uniform(0.0, 1.0),
+        'sheen_tint': random.uniform(0.0, 1.0),
+        'clearcoat': random.uniform(0.0, 1.0),
+        'clearcoat_gloss': random.uniform(0.0, 1.0)
+    }
 
     # Initialize base scene
     scene = {
@@ -41,6 +57,11 @@ def create_scene(bsdf_parameters, model, resolution, camera_positions):
     # render the scene from all camera positions
     images = [mi.render(scene, spp=256, sensor=sensor) for sensor in sensors]
 
+    # save the images to disk
+    if save:
+        for i, image in enumerate(images):
+            mi.util.write_bitmap(f'./testing/parameter_extraction/targets/target_{i}_{time.time()}.png', image)
+
     return images
 
 
@@ -64,6 +85,5 @@ def visualize_target_images(target_images):
         axs[i].axis('off')
         axs[i].set_title(f'Camera {i}')
 
-# images = get_data(bsdf_parameters)
-
-# visualize_target_images(images)
+model = "./testing/parameter_extraction/model/suzanne_blender_monkey.obj"
+create_scene(model, (128, 128), [[0, 0, 5], [0, 0, -5]], save=True)
