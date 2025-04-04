@@ -38,7 +38,7 @@ class ParameterOptimizer():
                 'parameters': [
                     'object.bsdf.base_color.value'
                 ],
-                'percent': 0.2
+                'percent': 0.1
             },
             '2': {
                 'parameters': [
@@ -46,7 +46,7 @@ class ParameterOptimizer():
                     'envmap.data',
                     'envmap.scale'
                 ],
-                'percent': 0.6
+                'percent': 0.3
             },
             '3': {
                 'parameters': [
@@ -92,16 +92,13 @@ class ParameterOptimizer():
             self.progress_images.append(image)
 
             loss = dr.mean(dr.sqr(image - self.target_images[random_idx]))
-            self.losses.append(loss)
+            loss_value = loss.numpy()
+            self.losses.append(loss_value)
             dr.backward(loss)
             opt.step()
             params.update(opt)
 
-            print("===============================================")
-            print(f'Stage {stage}, Optimizing {params.keys()}')
-            print(f'Learning rate: {lr}')
-            print(f'Iteration {i+1}/{num_iterations}: loss={loss}')
-            print("===============================================")
+            print(f"""===============================================\nStage {stage}, Optimizing {params.keys()}\nLearning rate: {lr}\nIteration {i+1}/{num_iterations}: loss={loss}\n===============================================""", end='\r')
 
         return self.progress_images
 
@@ -116,7 +113,7 @@ class ParameterOptimizer():
             'type': 'scene',
             'integrator': {
                 'type': 'path',
-                'max_depth': 2
+                'max_depth': 3
             },
             'envmap': {
                 'type': 'envmap',
@@ -124,7 +121,7 @@ class ParameterOptimizer():
                 'scale': 1.0
             },
             'object': {
-                'to_world': mi.ScalarTransform4f.scale(10.0),
+                'to_world': mi.ScalarTransform4f().scale(mi.ScalarPoint3f(10.0, 10.0, 10.0)),
                 'bsdf': self.bsdf_parameters
             }
         }
@@ -142,7 +139,7 @@ class ParameterOptimizer():
     def load_sensor(self, camera_position, resolution):
         return mi.load_dict({
                 'type': 'perspective',
-                'to_world': mi.ScalarTransform4f.look_at(origin=camera_position, target=(0, 0, 0), up=(0, 1, 0)),
+                'to_world': mi.ScalarTransform4f().look_at(origin=mi.ScalarTransform4f().translate(mi.ScalarPoint3f(camera_position)) @ mi.ScalarPoint3f(), target=mi.ScalarTransform4f().translate(mi.ScalarPoint3f(0, 0, 0)) @ mi.ScalarPoint3f(), up=mi.ScalarPoint3f(0, 1, 0)),
                 'film': {
                     'type': 'hdrfilm',
                     'width': resolution[0],
@@ -198,7 +195,7 @@ if __name__ == '__main__':
 
     # Run the optimization
     start_time = time.time()
-    progress_images = optimizer.run(100)
+    progress_images = optimizer.run(200)
     end_time = time.time()
     print(f'Elapsed time: {(end_time - start_time) / 60} minutes')
 
@@ -216,7 +213,7 @@ if __name__ == '__main__':
 
     # Display the loss history
     plt.figure()
-    plt.plot(optimizer.losses)
+    plt.plot(np.array(optimizer.losses))
     plt.xlabel('Iteration')
     plt.ylabel('Loss')
     plt.title('Loss history')

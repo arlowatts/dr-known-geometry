@@ -36,7 +36,7 @@ def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_size: int) -> list[
 
         # load the sensor
         sensor_params = (sensor_to_world, sensor_fov, sensor_ppo, sensor_distance)
-        sensor = loader.load_sensor(sensor_params, tmplt_size)
+        sensor = mi.load_dict(loader.load_sensor(sensor_params, tmplt_size))
 
         # render the scene and compute the image statistics
         img = 1 - mi.render(scene, sensor=sensor)[:, :, 0]
@@ -110,7 +110,7 @@ def match_poses(scene: 'mi.Scene', tmplts: list[tuple['mi.Transform4f',float,tup
 
             # load the updated sensor
             sensor_params = (sensor_to_world, sensor_fov, sensor_ppo, sensor_distance)
-            sensor = loader.load_sensor(sensor_params, ref_size)
+            sensor = mi.load_dict(loader.load_sensor(sensor_params, ref_size))
 
             # render the modified template
             mod = 1 - mi.render(scene, sensor=sensor)[:, :, 0]
@@ -130,18 +130,24 @@ def match_poses(scene: 'mi.Scene', tmplts: list[tuple['mi.Transform4f',float,tup
 
     return poses
 
-def optimize_poses(scene: 'mi.Scene', poses: list[tuple['mi.Transform4f',float,tuple[float,float],float]], refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]], ref_size: int, opt_iters: int) -> list[tuple['mi.Transform4f',float,tuple[float,float],float]]:
+def optimize_poses(scene, poses: list[tuple['mi.Transform4f',float,tuple[float,float],float]], refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]], ref_size: int, opt_iters: int) -> list[tuple['mi.Transform4f',float,tuple[float,float],float]]:
     """Optimize the given poses to more closely match the reference images.
 
     Apply an iterative optimization loop to each pose and each reference image.
     Optimize each pose separately using the L2 loss with the reference.
     Optimize the position, orientation, and field of view of each sensor.
     """
-
+    new_scene = scene.copy()
     opt_poses = []
+    sensors = [loader.load_sensor(sensor_params, ref_size) for sensor_params in poses]
+    for i in range(len(sensors)):
+        new_scene['sensor' + str(i)] = sensors[i]
+
+    new_scene = mi.load_dict(new_scene)
 
     for i in range(len(refs)):
-
+        params = mi.traverse(new_scene)
+        
         # access the reference image and initial sensor parameters
         ref = refs[i][0]
         sensor_params = poses[i]
@@ -149,10 +155,6 @@ def optimize_poses(scene: 'mi.Scene', poses: list[tuple['mi.Transform4f',float,t
         # store differentiable copies of the sensor parameters
         base_to_world = mi.Transform4f(sensor_params[0])
         base_fov = mi.Float(sensor_params[1])
-
-        # load the sensor and access its traversal
-        sensor = loader.load_sensor(sensor_params, ref_size)
-        params = mi.traverse(sensor)
 
         # initialize the optimizer
         opt = mi.ad.Adam(lr=learning_rate)
@@ -163,25 +165,25 @@ def optimize_poses(scene: 'mi.Scene', poses: list[tuple['mi.Transform4f',float,t
         opt['fov'] = mi.Float(0.0)
 
         for j in range(opt_iters):
-
+            #print(params)
             # compute the optimized sensor transform
-            params['to_world'] = base_to_world @ mi.Transform4f(dr.quat_to_matrix(opt['rotation'])) @ mi.Transform4f().translate(opt['translation'])
+            params['sensor' + str(i) + '.to_world'] = base_to_world @ mi.Transform4f(dr.quat_to_matrix(opt['rotation'])) @ mi.Transform4f().translate(opt['translation'])
 
             # compute the optimized field of view
-            params['x_fov'] = base_fov + opt['fov']
+            params['sensor' + str(i) + '.x_fov'] = base_fov + opt['fov']
 
             # update the parameters
             params.update()
 
             # render the image
-            img = 1 - mi.render(scene, params=params, sensor=sensor)[:, :, 0]
+            img = 1 - mi.render(scene=new_scene, params=params, sensor=i)[:, :, 0]
 
             # compute the loss and take a gradient descent step
             loss = dr.mean(dr.square(ref - img))
             dr.backward(loss)
             opt.step()
 
-            print(f'loss: {loss.array[0]:8f}', end='\r')
+            print(f'Iteration {j + 1} - Pose {i + 1} - Loss: {loss} - Rotation: {opt["rotation"]} - Translation: {opt["translation"]} - FOV: {base_fov + opt["fov"]}', end='\r')
 
         print()
 
@@ -239,7 +241,9 @@ def main():
 
     # load the scene with the given model and non-differentiable integrator
     print('Loading template scene')
-    scene = loader.load_scene(model_path, model_type, False)
+    scene = mi.load_dict(loader.load_scene(model_path, model_type, False))
+
+
 
     # load the reference images
     print('Loading reference images')
@@ -252,11 +256,12 @@ def main():
     poses = match_poses(scene, tmplts, refs, ref_size)
 
     # set a differentiable variant for pose optimization
-    mi.set_variant('llvm_ad_mono')
+    mi.set_variant('cuda_ad_mono')
 
     # reload the scene with a differentiable integrator
     print('Loading differentiable scene')
     scene = loader.load_scene(model_path, model_type, True)
+    
 
     # optimize the poses for each reference image
     opt_poses = optimize_poses(scene, poses, refs, ref_size, opt_iters)

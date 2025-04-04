@@ -61,7 +61,7 @@ def clean_ref(ref: mi.Bitmap, ref_size: int) -> 'mi.TensorXf':
 
     return ref
 
-def load_scene(model_path: str, model_type: str, differentiable: bool) -> 'mi.Scene':
+def load_scene(model_path: str, model_type: str, differentiable: bool):
     """Create the scene used for rendering a model's silhouette."""
 
     if differentiable:
@@ -79,7 +79,7 @@ def load_scene(model_path: str, model_type: str, differentiable: bool) -> 'mi.Sc
             'bsdf_samples': 0,
         }
 
-    return mi.load_dict({
+    return {
         'type': 'scene',
         'integrator': integrator,
         'model': {
@@ -100,12 +100,12 @@ def load_scene(model_path: str, model_type: str, differentiable: bool) -> 'mi.Sc
                 'value': 1.0,
             },
         },
-    })
+    }
 
-def load_sensor(sensor_params: tuple['mi.Transform4f',float,tuple[float,float],float], img_size: int) -> 'mi.Sensor':
+def load_sensor(sensor_params: tuple['mi.Transform4f',float,tuple[float,float],float], img_size: int):
     """Create a sensor with the given sensor parameters and film size."""
 
-    return mi.load_dict({
+    return {
         'type': 'perspective',
         'to_world': sensor_params[0],
         'fov': sensor_params[1],
@@ -118,4 +118,4 @@ def load_sensor(sensor_params: tuple['mi.Transform4f',float,tuple[float,float],f
             'pixel_format': 'luminance',
             'sample_border': True,
         },
-    })
+    }

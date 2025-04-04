@@ -23,7 +23,7 @@ def create_scene(bsdf_parameters, model, resolution, camera_positions):
             'scale': 1.0
         },
         'object': {
-            'to_world': mi.ScalarTransform4f.scale(10.0),
+            'to_world': mi.ScalarTransform4f().scale(mi.ScalarPoint3f(10.0, 10.0, 10.0)),
             'bsdf': bsdf_parameters
         }
     }
@@ -47,7 +47,7 @@ def create_scene(bsdf_parameters, model, resolution, camera_positions):
 def load_sensor(camera_position, resolution):
     return mi.load_dict({
             'type': 'perspective',
-            'to_world': mi.ScalarTransform4f.look_at(origin=camera_position, target=(0, 0, 0), up=(0, 1, 0)),
+            'to_world': mi.ScalarTransform4f().look_at(origin=camera_position, target=(0, 0, 0), up=(0, 1, 0)),
             'film': {
                 'type': 'hdrfilm',
                 'width': resolution[0],
