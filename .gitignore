@@ -1,2 +1,3 @@
 *.blend1
 *.gcode
+__pycache__
