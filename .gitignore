@@ -1,5 +1,6 @@
 *.blend1
 *.gcode
+__pycache__
 
 # dependencies
 /node_modules
