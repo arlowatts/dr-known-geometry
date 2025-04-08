@@ -8,7 +8,8 @@ import sys
 class PoseEstimator:
     def __init__(self, model_path, img_ref_path, options=None):
         # Set a mitsuba variant that supports differentiation
-        mi.set_variant('cuda_ad_rgb')
+        # have to do this before using point3fs whoops
+        mi.set_variant(options['mitsuba_variant'])
         
         # Define default options
         default_options = {

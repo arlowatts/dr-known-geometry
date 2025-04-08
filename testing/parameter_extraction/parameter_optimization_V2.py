@@ -311,6 +311,8 @@ class ParameterOptimizer():
 
 if __name__ == '__main__':
     model = "./geometry/bunny/bunny.obj"
+
+    # since i keep breaking your code when i set the variant dont forget to change it back here - this changes it for both the parameter optimization and pose estimation
     variant = 'cuda_ad_rgb'
 
     mi.set_variant(variant)
@@ -328,6 +330,7 @@ if __name__ == '__main__':
             'integrator_max_depth': 2
         },
         'pose_estimation': {
+            'mitsuba_variant': variant,
             'iteration_count': 200,
             'attempts_count': 10,
             'fov': 60,
@@ -339,6 +342,8 @@ if __name__ == '__main__':
         }
     }
     
+    # i could've used command line args but i didnt want to use the entire library so i just hardcoded everything
+    # once everything is working properly ill fix this
     target_images = [mi.Bitmap(img_path) for img_path in [r"C:\Users\joood\Desktop\dr-known-geometry\images\bunny\img-4151.png",
                                                           r"C:\Users\joood\Desktop\dr-known-geometry\images\bunny\img-4158.png",
                                                           r"C:\Users\joood\Desktop\dr-known-geometry\images\bunny\img-4162.png",]]
