@@ -59,10 +59,17 @@ def load_sensor(camera_position, resolution):
 def visualize_target_images(target_images):
     '''Visualize the target images'''
     fig, axs = plt.subplots(1, len(target_images), figsize=(10, 5))
-    for i, target_image in enumerate(target_images):
-        axs[i].imshow(target_image, cmap='gray')
-        axs[i].axis('off')
-        axs[i].set_title(f'Camera {i}')
+    
+    # Handle the case where there's only one image
+    if len(target_images) == 1:
+        axs.imshow(target_images[0], cmap='gray')
+        axs.axis('off')
+        axs.set_title('Camera 0')
+    else:
+        for i, target_image in enumerate(target_images):
+            axs[i].imshow(target_image, cmap='gray')
+            axs[i].axis('off')
+            axs[i].set_title(f'Camera {i}')
 
 # images = get_data(bsdf_parameters)
 
