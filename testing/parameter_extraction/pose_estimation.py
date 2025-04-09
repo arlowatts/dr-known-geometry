@@ -245,7 +245,7 @@ def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple
         print()
 
         # update the sensor with the optimized pose
-        opt_transforms.append(transform.inverse() @ params[f'sensor{i}.to_world'])
+        opt_transforms.append(mi.ScalarTransform4f(dr.slice((transform.inverse() @ params[f'sensor{i}.to_world']).matrix, 0)))
 
     return opt_transforms
 
