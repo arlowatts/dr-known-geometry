@@ -355,7 +355,7 @@ def get_scene_dict(model_path: str, model_type: str, sensor_dicts: list[dict[str
         },
     }
 
-    if sensor_dicts != None:
+    if sensor_dicts:
         for i in range(len(sensor_dicts)):
             scene_dict[f'sensor{i}'] = sensor_dicts[i]
 
