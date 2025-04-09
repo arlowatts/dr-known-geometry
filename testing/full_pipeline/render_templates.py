@@ -123,13 +123,15 @@ def match_poses(scene: 'mi.Scene', tmplts: list[tuple[tuple['mi.ScalarTransform4
 
     return poses
 
-def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]], opt_iters: int):
+def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]], opt_iters: int) -> list['mi.ScalarTransform4f']:
     """Optimize the given poses to more closely match the reference images.
 
     Apply an iterative optimization loop to each pose and each reference image.
     Optimize each pose separately using the L2 loss with the reference.
     Optimize the position, orientation, and field of view of each sensor.
     """
+
+    opt_poses = []
 
     # access the scene parameters, including all of the sensors
     params = mi.traverse(scene)
@@ -176,7 +178,9 @@ def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple
         print()
 
         # update the sensor with the optimized pose
-        params[f'sensor{i}.to_world'] = transform.inverse() @ params[f'sensor{i}.to_world']
+        opt_poses.append(transform.inverse() @ params[f'sensor{i}.to_world'])
+
+    return opt_poses
 
 def main():
     """Determine approximate poses with arguments parsed from the command line."""
@@ -248,6 +252,6 @@ def main():
     scene = mi.load_dict(loader.get_scene_dict(model_path, model_type, sensor_dicts=sensor_dicts, differentiable=True))
 
     # optimize the poses for each reference image
-    optimize_poses(scene, refs, opt_iters)
+    opt_poses = optimize_poses(scene, refs, opt_iters)
 
 if __name__ == '__main__': main()
