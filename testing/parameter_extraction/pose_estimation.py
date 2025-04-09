@@ -76,6 +76,8 @@ class PoseEstimator:
         # restore the previous mitsuba variant
         mi.set_variant(variant)
 
+        return self.opt_transforms
+
 def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_shape: (int, int)) -> list[tuple[tuple['mi.ScalarTransform4f',float,tuple[float,float],float],tuple[tuple[float,float],tuple[float,float],float]]]:
     """Render silhouette templates of a given scene.
 
