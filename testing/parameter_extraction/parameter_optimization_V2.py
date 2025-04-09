@@ -1,4 +1,3 @@
-# Imports
 import mitsuba as mi
 import drjit as dr
 import matplotlib.pyplot as plt
@@ -9,11 +8,9 @@ import time
 
 import synthetic_data
 import sys
-sys.path.append(r"C:\Users\joood\Desktop\dr-known-geometry\testing\pose_estimation")
 from pose_estimation import PoseEstimator
 
 DEFAULT_PARAMETER_OPTIMIZATION_SETTINGS = {
-    'mitsuba_variant': 'cuda_ad_rgb',
     'resolution': (128, 128),
     'num_iterations': 200,
     'learning_rate': 0.01,
@@ -69,42 +66,47 @@ DEFAULT_PARAMETER_OPTIMIZATION_SETTINGS = {
 }
 
 DEFAULT_POSE_ESTIMATION_SETTINGS = {
-    'iteration_count': 200,
-    'attempts_count': 10,
-    'fov': 60,
-    'img_size': 64,
-    'sensor_distance': 2,
-    'min_translation': [-10.0, -10.0, -10.0],
-    'max_translation': [10.0, 10.0, 10.0],
-    'binary_threshold': 0.1
+    'model_path': 'model/bunny.ply', # file path of the 3D model (must be appropriately scaled and centered)
+    'model_type': 'ply',        # file type of the 3D model ('obj' or 'ply')
+    'ref_dir': 'images/masks/', # directory containing the reference masks
+    'ref_shape': (128, 128),    # dimensions of reference masks after resampling
+    'tmplt_count': 256,         # number of initial templates to render
+    'tmplt_shape': (128, 128),  # dimensions of rendered templates
+    'opt_iters': 100,           # number of optimization iterations to optimize each reference mask
 }
 
 class ParameterOptimizer():
-    def __init__(self, target_images, target_masks, model_path, settings=None):
-        # default settings
+    def __init__(self, target_images, model_path, settings=None):
+
+        # initialize the class with default settings
         self.settings = {
             'parameter_optimization': DEFAULT_PARAMETER_OPTIMIZATION_SETTINGS.copy(),
-            'pose_estimation': DEFAULT_POSE_ESTIMATION_SETTINGS.copy()
+            'pose_estimation': DEFAULT_POSE_ESTIMATION_SETTINGS.copy(),
         }
         
-        # update settings
+        # update the settings with the passed arguments
         if settings:
             if 'parameter_optimization' in settings:
                 self.settings['parameter_optimization'].update(settings['parameter_optimization'])
             if 'pose_estimation' in settings:
                 self.settings['pose_estimation'].update(settings['pose_estimation'])
         
+        # convert the pixel format and component format, and resample the target images with a box filter
         self.rfilter = mi.scalar_rgb.load_dict({'type': 'box'})
         resolution = self.settings['parameter_optimization']['resolution']
         self.target_images = [target_images[i].convert(pixel_format=mi.Bitmap.PixelFormat.RGB, 
                                                       component_format=mi.Struct.Type.Float32).resample(
                                                       [resolution[0], resolution[1]], self.rfilter) 
                               for i in range(len(target_images))]
-        self.target_masks = target_masks
+
+        # set the model path
+        # TODO: maybe include this as a universal argument in settings?
+        # i'm using it in settings for pose estimation.
+        # or maybe not really a setting, but rather a program input? discuss
         self.model_path = model_path
         
         # get camera positions using pose estimation
-        self.camera_positions = self.pose_estimation(target_masks, model_path)
+        self.camera_positions = self.pose_estimation()
         
         # Initialize BSDF parameters from settings
         self.bsdf_parameters = self.settings['parameter_optimization']['initial_bsdf']
@@ -119,12 +121,8 @@ class ParameterOptimizer():
         if num_iterations is None:
             num_iterations = self.settings['parameter_optimization']['num_iterations']
             
-        mi.set_variant(self.settings['parameter_optimization']['mitsuba_variant'])
-
-        camera_positions = self.camera_positions
-
         # Create the scene
-        self.create_scene(self.model_path, camera_positions)
+        self.create_scene(self.model_path, self.camera_positions)
 
         # Dictionary to store the final optimized parameters
         self.optimized_parameters = {}
@@ -142,7 +140,7 @@ class ParameterOptimizer():
 
             params.update(opt)
 
-            random_idx = random.randint(0, len(camera_positions) - 1)
+            random_idx = random.randint(0, len(self.camera_positions) - 1)
             image = self.render(self.scene, self.sensors[random_idx], params)
             self.progress_images.append(mi.Bitmap(image))
 
@@ -228,50 +226,11 @@ class ParameterOptimizer():
 
     def load_sensor(self, camera_transform, resolution):
         """Create a sensor positioned to view the model as in the target image"""
-        # -------------------------------
-        # Problems with transforms are here
-        # quaternion is a dr.auto.ad.Quaternion4f
-        # translation is a Point3f
-        # cant pass these values directly or use quat_to_matrix since the matrix returned is the differentiable version, which doesnt work with the sensor
-        # current approach is to extract the values from the quaternion and translation and use them to create a new transform
-        # -------------------------------
 
-        quaternion = camera_transform['quaternion']
-        translation = camera_transform['translation']
-        
-        camera_distance = self.settings['parameter_optimization']['camera_distance']
-
-        # Get the quaternion components
-        x = -quaternion.x.array[0]
-        y = -quaternion.y.array[0]
-        z = -quaternion.z.array[0]
-        w = quaternion.w.array[0]
-
-        # Calculate angle and axis for rotation
-        angle = 2 * math.atan2(math.sqrt(x**2 + y**2 + z**2), w)
-        axis = []
-        axis.append(x / math.sqrt(x**2 + y**2 + z**2))
-        axis.append(y / math.sqrt(x**2 + y**2 + z**2))
-        axis.append(z / math.sqrt(x**2 + y**2 + z**2))
-
-        
-        # Get inverse translation
-        trans_x = -translation.x.array[0]
-        trans_y = -translation.y.array[0]
-        trans_z = -translation.z.array[0]
-
-        print(f"Axis: {axis}, Angle: {angle}")
-        print(f"Translation: {[trans_x, trans_y, trans_z]}")
-        print()
-        
-        # might be some ordering issues here
         return mi.load_dict({
             'type': 'perspective',
-            'to_world': mi.ScalarTransform4f()
-                        .translate([0, 0, -camera_distance])
-                        .translate([trans_x, trans_y, trans_z])
-                        .rotate(axis=[axis[0], axis[1], axis[2]], angle=angle),
-            'fov': 60,
+            'to_world': camera_transform,
+            'fov': 40,
             'film': {
                 'type': 'hdrfilm',
                 'width': resolution[0],
@@ -279,28 +238,14 @@ class ParameterOptimizer():
             }
         })
 
-    def pose_estimation(self, target_images, model):
+    def pose_estimation(self):
         """Use PoseEstimator to determine camera transforms for each target image"""
-        camera_transforms = []
-        
-        for i, target_image in enumerate(target_images):
-            temp_img_path = f"./temp_target_{i}.png"
-            mi.util.write_bitmap(temp_img_path, target_image)
-            time.sleep(0.5)
-            
-            pose_settings = self.settings['pose_estimation'].copy()
-            
-            # run pose estimation
-            estimator = PoseEstimator(model, temp_img_path, options=pose_settings)
-            results = estimator.optimize()
-            
-            # save the quaternion and the translation
-            camera_transforms.append({
-                'quaternion': results['quaternion'],
-                'translation': results['translation']
-            })
-        
-        return camera_transforms
+
+        # initialize the pose estimator
+        estimator = PoseEstimator(*self.settings['pose_estimation'].values())
+
+        # optimize the poses
+        return estimator.optimize()
     
     def get_stage(self, iteration, num_iterations):
         for stage, data in self.optimization_stages.items():
@@ -310,17 +255,15 @@ class ParameterOptimizer():
     
 
 if __name__ == '__main__':
-    model = "./geometry/bunny/bunny.obj"
+    model_path = "model/bunny.ply"
+    model_type = 'ply'
 
-    # since i keep breaking your code when i set the variant dont forget to change it back here - this changes it for both the parameter optimization and pose estimation
-    variant = 'cuda_ad_rgb'
-
-    mi.set_variant(variant)
+    # use a cuda variant if available, or llvm if necessary
+    mi.set_variant('cuda_ad_rgb')
     
-    # settings
+    # initialize the settings for the program
     settings = {
         'parameter_optimization': {
-            'mitsuba_variant': variant,
             'resolution': (128, 128),
             'num_iterations': 200,
             'learning_rate': 0.01,
@@ -330,30 +273,22 @@ if __name__ == '__main__':
             'integrator_max_depth': 2
         },
         'pose_estimation': {
-            'mitsuba_variant': variant,
-            'iteration_count': 200,
-            'attempts_count': 10,
-            'fov': 60,
-            'img_size': 64,
-            'sensor_distance': 2,
-            'min_translation': mi.Point3f(-10.0, -10.0, -10.0),
-            'max_translation': mi.Point3f(10.0, 10.0, 10.0),
-            'binary_threshold': 0.1
+            'model_path': model_path,   # file path of the 3D model (must be appropriately scaled and centered)
+            'model_type': model_type,   # file type of the 3D model ('obj' or 'ply')
+            'ref_dir': 'images/masks/', # directory containing the reference masks
+            'ref_shape': (128, 128),    # dimensions of reference masks after resampling
+            'tmplt_count': 256,         # number of initial templates to render
+            'tmplt_shape': (128, 128),  # dimensions of rendered templates
+            'opt_iters': 100,           # number of optimization iterations to optimize each reference mask
         }
     }
     
-    # i could've used command line args but i didnt want to use the entire library so i just hardcoded everything
-    # once everything is working properly ill fix this
-    target_images = [mi.Bitmap(img_path) for img_path in [r"C:\Users\joood\Desktop\dr-known-geometry\images\bunny\img-4151.png",
-                                                          r"C:\Users\joood\Desktop\dr-known-geometry\images\bunny\img-4158.png",
-                                                          r"C:\Users\joood\Desktop\dr-known-geometry\images\bunny\img-4162.png",]]
-    target_masks = [img_path for img_path in [r"C:\Users\joood\Desktop\dr-known-geometry\images\bunny\masks\cropped\img-4151-mask.png",
-                                                          r"C:\Users\joood\Desktop\dr-known-geometry\images\bunny\masks\cropped\img-4158-mask.png",
-                                                          r"C:\Users\joood\Desktop\dr-known-geometry\images\bunny\masks\cropped\img-4162-mask.png",]]
+    # load three color images as references for the parameter optimization stage
+    target_images = [mi.Bitmap(f'images/color/img_{i:02d}.png') for i in range(3)]
 
     # create optimizer and load settings
     start_time = time.time()
-    optimizer = ParameterOptimizer(target_images, target_masks, model, settings)
+    optimizer = ParameterOptimizer(target_images, model_path, settings)
 
     # Run the optimization
     progress_images = optimizer.run()
@@ -388,7 +323,6 @@ if __name__ == '__main__':
     # render model with final parameters
     def render_showcase(model_path, bsdf_params, resolution=(512, 512)):
         """Render the model with optimized parameters and white environment map"""
-        mi.set_variant(variant)
         
         bsdf = {
             'type': 'principled'
@@ -409,9 +343,9 @@ if __name__ == '__main__':
         white_envmap = mi.Bitmap(np.ones((64, 128, 3), dtype=np.float32))
         
         camera_positions = [
-            {'origin': [1, -4, 0], 'target': [0, 0, 0], 'up': [0, 1, 0]},
-            {'origin': [4, 0, 0], 'target': [0, 0, 0], 'up': [0, 1, 0]}, 
-            {'origin': [-3, 3, 3], 'target': [0, 0, 0], 'up': [0, 1, 0]}
+            mi.ScalarTransform4f().look_at([1, -4, 0], [0, 0, 0], [0, 1, 0]),
+            mi.ScalarTransform4f().look_at([4, 0, 0], [0, 0, 0], [0, 1, 0]),
+            mi.ScalarTransform4f().look_at([-3, 3, 3], [0, 0, 0], [0, 1, 0]),
         ]
         
         showcase_images = []
