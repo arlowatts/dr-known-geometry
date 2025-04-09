@@ -8,7 +8,7 @@ import os, math, random
 learning_rate = 0.025
 
 # define reasonable defaults for the sensor parameters
-default_sensor_fov = 80
+default_sensor_fov = 40
 default_sensor_ppo = (0, 0)
 default_sensor_distance = 1
 
@@ -18,13 +18,13 @@ class PoseEstimator:
     def __init__(self, model_path: str, model_type: str, ref_dir: str, ref_shape: (int, int), tmplt_count: int, tmplt_shape: (int, int), opt_iters: int):
 
         # check arguments
-        if not os.path.isfile(model_path):             raise ValueError('model_path must be an existing file')
-        if not model_type in ('obj', 'ply'):           raise ValueError('model_type must be "obj" or "ply"')
-        if not os.path.isdir(ref_dir):                 raise ValueError('ref_dir must be an existing directory')
-        if ref_shape[0] <= 0 or ref_shape[1] <= 0:     raise ValueError('ref_shape must be greater than (0, 0)')
-        if tmplt_count <= 0:                           raise ValueError('tmplt_count must be greater than 0')
-        if tmplt_shape[0] <= 0 or tmplt_shape[1] <= 0: raise ValueError('tmplt_shape must be greater than (0, 0)')
-        if opt_iters <= 0:                             raise ValueError('opt_iters must be greater than 0')
+        if not os.path.isfile(model_path):             raise ValueError(f'{model_path} does not exist or is not a file')
+        if not model_type in ('obj', 'ply'):           raise ValueError(f'{model_type} is not "obj" or "ply"')
+        if not os.path.isdir(ref_dir):                 raise ValueError(f'{ref_dir} is not an existing directory')
+        if ref_shape[0] <= 0 or ref_shape[1] <= 0:     raise ValueError(f'{ref_shape} is not greater than (0, 0)')
+        if tmplt_count <= 0:                           raise ValueError(f'{tmplt_count} is not greater than 0')
+        if tmplt_shape[0] <= 0 or tmplt_shape[1] <= 0: raise ValueError(f'{tmplt_shape} is not greater than (0, 0)')
+        if opt_iters <= 0:                             raise ValueError(f'{opt_iters} is not greater than 0')
 
         # save arguments as properties
         self.model_path = model_path
@@ -63,8 +63,7 @@ class PoseEstimator:
 
         # store the current mitsuba variant to restore it later
         variant = mi.variant()
-        try: mi.set_variant('cuda_ad_mono')
-        except: mi.set_variant('llvm_ad_mono')
+        mi.set_variant('cuda_ad_mono')
 
         # reload the scene with a differentiable integrator
         print('Loading optimization scene')
