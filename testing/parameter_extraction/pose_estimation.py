@@ -26,6 +26,7 @@ class PoseEstimator:
         if tmplt_shape[0] <= 0 or tmplt_shape[1] <= 0: raise ValueError('tmplt_shape must be greater than (0, 0)')
         if opt_iters <= 0:                             raise ValueError('opt_iters must be greater than 0')
 
+        # save arguments as properties
         self.model_path = model_path
         self.model_type = model_type
         self.ref_dir = ref_dir
@@ -332,6 +333,7 @@ def get_scene_dict(model_path: str, model_type: str, sensor_dicts: list[dict[str
             'bsdf_samples': 0,
         }
 
+    # create the basic scene structure
     scene_dict = {
         'type': 'scene',
         'integrator': integrator,
@@ -355,6 +357,7 @@ def get_scene_dict(model_path: str, model_type: str, sensor_dicts: list[dict[str
         },
     }
 
+    # add the sensors, if any are provided
     if sensor_dicts:
         for i in range(len(sensor_dicts)):
             scene_dict[f'sensor{i}'] = sensor_dicts[i]
@@ -364,6 +367,7 @@ def get_scene_dict(model_path: str, model_type: str, sensor_dicts: list[dict[str
 def get_sensor_dict(sensor_params: tuple['mi.ScalarTransform4f',float,tuple[float,float],float], img_shape: (int, int)) -> dict[str, any]:
     """Create a sensor with the given sensor parameters and film size."""
 
+    # create the basic sensor structure
     return {
         'type': 'perspective',
         'to_world': sensor_params[0],
