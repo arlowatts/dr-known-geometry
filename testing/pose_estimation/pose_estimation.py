@@ -37,6 +37,10 @@ class PoseEstimator:
         self.poses = None
         self.opt_transforms = None
 
+        # store the current mitsuba variant to restore it later
+        variant = mi.variant()
+        mi.set_variant('scalar_rgb')
+
         # load a scene with the model and a non-differentiable integrator
         print('Loading template scene')
         tmplt_scene = mi.load_dict(get_scene_dict(self.model_path, self.model_type))
@@ -51,7 +55,15 @@ class PoseEstimator:
         # match the templates to the reference images
         self.poses = match_poses(tmplt_scene, tmplts, self.refs)
 
+        # restore the previous mitsuba variant
+        mi.set_variant(variant)
+
     def optimize(self):
+
+        # store the current mitsuba variant to restore it later
+        variant = mi.variant()
+        try: mi.set_variant('cuda_ad_mono')
+        except: mi.set_variant('llvm_ad_mono')
 
         # reload the scene with a differentiable integrator
         print('Loading optimization scene')
@@ -60,6 +72,9 @@ class PoseEstimator:
 
         # optimize the poses for each reference image
         self.opt_transforms = optimize_poses(opt_scene, self.refs, self.opt_iters)
+
+        # restore the previous mitsuba variant
+        mi.set_variant(variant)
 
 def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_shape: (int, int)) -> list[tuple[tuple['mi.ScalarTransform4f',float,tuple[float,float],float],tuple[tuple[float,float],tuple[float,float],float]]]:
     """Render silhouette templates of a given scene.
