@@ -123,7 +123,7 @@ def match_poses(scene: 'mi.Scene', tmplts: list[tuple[tuple['mi.ScalarTransform4
 
     return poses
 
-def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]], opt_iters: int) -> list[tuple['mi.ScalarTransform4f',float,tuple[float,float],float]]:
+def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]], opt_iters: int):
     """Optimize the given poses to more closely match the reference images.
 
     Apply an iterative optimization loop to each pose and each reference image.
@@ -131,57 +131,52 @@ def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple
     Optimize the position, orientation, and field of view of each sensor.
     """
 
-    opt_poses = []
-
     # access the scene parameters, including all of the sensors
-    scene_params = mi.traverse(scene)
+    params = mi.traverse(scene)
+
+    # unravel the vertex positions of the model to transform it
+    vertex_positions = dr.unravel(mi.Point3f, params['model.vertex_positions'])
 
     # iterate over all reference images
     for i in range(len(refs)):
 
-        # access the reference image and initial sensor parameters
+        # access the reference image
         ref = refs[i][0]
-
-        # store differentiable copies of the sensor parameters
-        base_to_world = mi.Transform4f(sensor_params[0])
-        base_fov = mi.Float(sensor_params[1])
 
         # initialize the optimizer
         opt = mi.ad.Adam(lr=learning_rate)
 
-        # initialize the optimizer's variables
+        # initialize the optimization parameters
         opt['rotation'] = mi.Quaternion4f(0.0, 0.0, 0.0, 1.0)
         opt['translation'] = mi.Point3f(0.0, 0.0, 0.0)
-        opt['fov'] = mi.Float(0.0)
 
+        # optimize the rotation and translation of the model
         for j in range(opt_iters):
-            #print(params)
-            # compute the optimized sensor transform
-            params['sensor' + str(i) + '.to_world'] = base_to_world @ mi.Transform4f(dr.quat_to_matrix(opt['rotation'])) @ mi.Transform4f().translate(opt['translation'])
 
-            # compute the optimized field of view
-            params['sensor' + str(i) + '.x_fov'] = base_fov + opt['fov']
+            # constrain the optimization parameters
+            opt['rotation'] = dr.normalize(opt['rotation'])
 
-            # update the parameters
+            # compute the optimized transform
+            transform = mi.Transform4f().translate(opt['translation']) @ mi.Transform4f(dr.quat_to_matrix(opt['rotation']))
+
+            # transform the model in the scene and update
+            params['model.vertex_positions'] = dr.ravel(transform @ vertex_positions)
             params.update()
 
             # render the image
-            img = 1 - mi.render(scene=new_scene, params=params, sensor=i)[:, :, 0]
+            img = 1 - mi.render(scene=scene, params=params, sensor=i, seed=j)[:, :, 0]
 
             # compute the loss and take a gradient descent step
             loss = dr.mean(dr.square(ref - img))
             dr.backward(loss)
             opt.step()
 
-            print(f'Iteration {j + 1} - Pose {i + 1} - Loss: {loss} - Rotation: {opt["rotation"]} - Translation: {opt["translation"]} - FOV: {base_fov + opt["fov"]}', end='\r')
+            print(f'Optimizing view {i+1}/{len(refs)} progress {j+1}/{opt_iters} loss {loss}', end='\r')
 
         print()
 
-        # store the optimized pose
-        opt_sensor_params = (base_to_world, sensor_params[1], sensor_params[2], sensor_params[3])
-        opt_poses.append(opt_sensor_params)
-
-    return opt_poses
+        # update the sensor with the optimized pose
+        params[f'sensor{i}.to_world'] = transform.inverse() @ params[f'sensor{i}.to_world']
 
 def main():
     """Determine approximate poses with arguments parsed from the command line."""
@@ -252,6 +247,6 @@ def main():
     scene = mi.load_dict(loader.get_scene_dict(model_path, model_type, sensor_dicts=sensor_dicts, differentiable=True))
 
     # optimize the poses for each reference image
-    opt_poses = optimize_poses(scene, refs, opt_iters)
+    optimize_poses(scene, refs[1:5], opt_iters)
 
 if __name__ == '__main__': main()
