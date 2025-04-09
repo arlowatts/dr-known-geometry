@@ -239,7 +239,8 @@ def main():
     poses = match_poses(scene, tmplts, refs)
 
     # set a differentiable variant for pose optimization
-    mi.set_variant('llvm_ad_mono')
+    try: mi.set_variant('cuda_ad_mono')
+    except: mi.set_variant('llvm_ad_mono')
 
     # reload the scene with a differentiable integrator
     print('Loading optimization scene')
@@ -247,6 +248,6 @@ def main():
     scene = mi.load_dict(loader.get_scene_dict(model_path, model_type, sensor_dicts=sensor_dicts, differentiable=True))
 
     # optimize the poses for each reference image
-    optimize_poses(scene, refs[1:5], opt_iters)
+    optimize_poses(scene, refs, opt_iters)
 
 if __name__ == '__main__': main()
