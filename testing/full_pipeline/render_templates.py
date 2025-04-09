@@ -11,7 +11,7 @@ img_binary_threshold = 0.5
 # set the initial learning rate for the Adam optimizers
 learning_rate = 0.025
 
-def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_size: int) -> list[tuple['mi.Transform4f',float,tuple[float,float],float],tuple[tuple[float,float],tuple[float,float],float]]:
+def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_shape: (int, int)) -> list[tuple[tuple['mi.ScalarTransform4f',float,tuple[float,float],float],tuple[tuple[float,float],tuple[float,float],float]]]:
     """Render silhouette templates of a given scene.
 
     Render a set of template silhouettes using the given scene from random sensor positions.
@@ -36,11 +36,11 @@ def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_size: int) -> list[
 
         # load the sensor
         sensor_params = (sensor_to_world, sensor_fov, sensor_ppo, sensor_distance)
-        sensor = mi.load_dict(loader.load_sensor(sensor_params, tmplt_size))
+        sensor = mi.load_dict(loader.get_sensor_dict(sensor_params, tmplt_shape))
 
         # render the scene and compute the image statistics
         img = 1 - mi.render(scene, sensor=sensor)[:, :, 0]
-        img_stats = loader.get_img_stats(img, tmplt_size, img_binary_threshold)
+        img_stats = loader.get_img_stats(img, img_binary_threshold)
 
         # append the sensor parameters and the image statistics to the output
         tmplts.append((sensor_params, img_stats))
@@ -51,7 +51,7 @@ def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_size: int) -> list[
 
     return tmplts
 
-def match_poses(scene: 'mi.Scene', tmplts: list[tuple['mi.Transform4f',float,tuple[float,float],float],tuple[tuple[float,float],tuple[float,float],float]], refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]], ref_size: int) -> list[tuple['mi.Transform4f',float,tuple[float,float],float]]:
+def match_poses(scene: 'mi.Scene', tmplts: list[tuple[tuple['mi.ScalarTransform4f',float,tuple[float,float],float],tuple[tuple[float,float],tuple[float,float],float]]], refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]]) -> list[tuple['mi.ScalarTransform4f',float,tuple[float,float],float]]:
     """For each reference image, find the most similar template and determine the pose.
 
     Compare the image statistics of the reference images with the statistics of each template.
@@ -61,68 +61,61 @@ def match_poses(scene: 'mi.Scene', tmplts: list[tuple['mi.Transform4f',float,tup
 
     poses = []
 
+    # iterate over all reference images
     for i in range(len(refs)):
-        ref_pair = refs[i]
+        ref, ref_stats = refs[i]
 
-        # extract the statistics of the reference image
-        ref = ref_pair[0]
-        ref_com = ref_pair[1][0]
-        ref_rot = ref_pair[1][1]
-        ref_pixel_ratio = ref_pair[1][2]
+        # access the statistics of the reference image
+        ref_com, ref_rot, ref_pixel_ratio = ref_stats
 
+        # initialize the search for the most similar template
         best_loss = math.inf
         best_sensor_params = None
 
-        # compare its statistics to every template
+        # compare all templates to the reference image
         for j in range(len(tmplts)):
-            tmplt = tmplts[j]
-            sensor_params, img_stats = tmplt
+            sensor_params, img_stats = tmplts[j]
 
             # access the sensor parameters
-            sensor_to_world = sensor_params[0]
-            sensor_fov = sensor_params[1]
-            sensor_ppo = sensor_params[2]
-            sensor_distance = sensor_params[3]
+            sensor_to_world, sensor_fov, sensor_ppo, sensor_distance = sensor_params
 
             # access the image statistics
-            img_com = img_stats[0]
-            img_rot = img_stats[1]
-            img_pixel_ratio = img_stats[2]
+            img_com, img_rot, img_pixel_ratio = img_stats
 
             # compute the relative scale of the template and the reference
             scale = math.sqrt(img_pixel_ratio / ref_pixel_ratio)
             shift_scale = 2.0 * math.tan(math.radians(sensor_fov / 2.0)) * (sensor_distance * scale)
-            in_axis_translation = mi.Transform4f().translate((0.0, 0.0, sensor_distance * (1 - scale)))
+            in_axis_translation = mi.ScalarTransform4f().translate((0.0, 0.0, sensor_distance * (1.0 - scale)))
 
             # compute the in-plane shift to center the silhouette
-            center_translation = mi.Transform4f().translate(((0.5 - img_com[1]) * shift_scale, (0.5 - img_com[0]) * shift_scale, 0.0))
+            center_translation = mi.ScalarTransform4f().translate((img_com[1] * -shift_scale, img_com[0] * -shift_scale, 0.0))
 
             # compute the relative rotation of the template and the reference
-            rotation = math.atan2(ref_rot[0] * img_rot[1] - ref_rot[1] * img_rot[0], ref_rot[0] * img_rot[0] + ref_rot[1] * img_rot[1])
-            in_plane_rotation = mi.Transform4f().rotate((0, 0, -1), math.degrees(rotation))
+            rotation = math.atan2(img_rot[0] * ref_rot[1] - img_rot[1] * ref_rot[0], img_rot[0] * ref_rot[0] + img_rot[1] * ref_rot[1])
+            in_plane_rotation = mi.ScalarTransform4f().rotate((0, 0, 1), math.degrees(rotation))
 
             # compute the in-plane shift to match the reference's center of mass
-            ref_match_translation = mi.Transform4f().translate(((ref_com[1] - 0.5) * shift_scale, (ref_com[0] - 0.5) * shift_scale, 0.0))
+            ref_match_translation = mi.Transform4f().translate((ref_com[1] * shift_scale, ref_com[0] * shift_scale, 0.0))
 
             # update the sensor parameters
-            sensor_to_world = sensor_to_world @ center_translation @ in_axis_translation @ in_plane_rotation @ ref_match_translation
+            sensor_to_world = sensor_to_world @ in_axis_translation @ center_translation @ in_plane_rotation @ ref_match_translation
             sensor_distance = sensor_distance * scale
 
             # load the updated sensor
             sensor_params = (sensor_to_world, sensor_fov, sensor_ppo, sensor_distance)
-            sensor = mi.load_dict(loader.load_sensor(sensor_params, ref_size))
+            sensor = mi.load_dict(loader.get_sensor_dict(sensor_params, ref.shape))
 
             # render the modified template
-            mod = 1 - mi.render(scene, sensor=sensor)[:, :, 0]
+            img = 1 - mi.render(scene, sensor=sensor)[:, :, 0]
 
             # compute the L2 loss
-            loss = np.mean(np.square(ref - mod))
+            loss = np.mean(np.square(ref - img))
 
             if loss < best_loss:
                 best_loss = loss
                 best_sensor_params = sensor_params
 
-            print(f'Matching templates {i*len(tmplts)+j+1}/{len(tmplts)*len(refs)}', end='\r')
+            print(f'Matching templates {i*len(tmplts)+j+1}/{len(refs)*len(tmplts)}', end='\r')
 
         poses.append(best_sensor_params)
 
@@ -130,27 +123,24 @@ def match_poses(scene: 'mi.Scene', tmplts: list[tuple['mi.Transform4f',float,tup
 
     return poses
 
-def optimize_poses(scene, poses: list[tuple['mi.Transform4f',float,tuple[float,float],float]], refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]], ref_size: int, opt_iters: int) -> list[tuple['mi.Transform4f',float,tuple[float,float],float]]:
+def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]], opt_iters: int) -> list[tuple['mi.ScalarTransform4f',float,tuple[float,float],float]]:
     """Optimize the given poses to more closely match the reference images.
 
     Apply an iterative optimization loop to each pose and each reference image.
     Optimize each pose separately using the L2 loss with the reference.
     Optimize the position, orientation, and field of view of each sensor.
     """
-    new_scene = scene.copy()
+
     opt_poses = []
-    sensors = [loader.load_sensor(sensor_params, ref_size) for sensor_params in poses]
-    for i in range(len(sensors)):
-        new_scene['sensor' + str(i)] = sensors[i]
 
-    new_scene = mi.load_dict(new_scene)
+    # access the scene parameters, including all of the sensors
+    scene_params = mi.traverse(scene)
 
+    # iterate over all reference images
     for i in range(len(refs)):
-        params = mi.traverse(new_scene)
-        
+
         # access the reference image and initial sensor parameters
         ref = refs[i][0]
-        sensor_params = poses[i]
 
         # store differentiable copies of the sensor parameters
         base_to_world = mi.Transform4f(sensor_params[0])
@@ -241,29 +231,27 @@ def main():
 
     # load the scene with the given model and non-differentiable integrator
     print('Loading template scene')
-    scene = mi.load_dict(loader.load_scene(model_path, model_type, False))
-
-
+    scene = mi.load_dict(loader.get_scene_dict(model_path, model_type))
 
     # load the reference images
     print('Loading reference images')
-    refs = loader.load_refs(ref_dir, ref_size, img_binary_threshold)
+    refs = loader.get_refs(ref_dir, (ref_size, ref_size), img_binary_threshold)
 
     # render a set of templates
-    tmplts = render_tmplts(scene, tmplt_count, tmplt_size)
+    tmplts = render_tmplts(scene, tmplt_count, (tmplt_size, tmplt_size))
 
     # match the templates to the reference images
-    poses = match_poses(scene, tmplts, refs, ref_size)
+    poses = match_poses(scene, tmplts, refs)
 
     # set a differentiable variant for pose optimization
-    mi.set_variant('cuda_ad_mono')
+    mi.set_variant('llvm_ad_mono')
 
     # reload the scene with a differentiable integrator
-    print('Loading differentiable scene')
-    scene = loader.load_scene(model_path, model_type, True)
-    
+    print('Loading optimization scene')
+    sensor_dicts = [loader.get_sensor_dict(sensor_params, (ref_size, ref_size)) for sensor_params in poses]
+    scene = mi.load_dict(loader.get_scene_dict(model_path, model_type, sensor_dicts=sensor_dicts, differentiable=True))
 
     # optimize the poses for each reference image
-    opt_poses = optimize_poses(scene, poses, refs, ref_size, opt_iters)
+    opt_poses = optimize_poses(scene, refs, opt_iters)
 
 if __name__ == '__main__': main()
