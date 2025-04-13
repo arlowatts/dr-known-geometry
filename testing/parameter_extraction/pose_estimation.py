@@ -3,6 +3,7 @@ import drjit as dr
 import numpy as np
 import scipy.ndimage as ndimage
 import os, math, random
+from tqdm import tqdm  # Add this import
 
 # set the initial learning rate for the Adam optimizers
 learning_rate = 0.025
@@ -43,11 +44,9 @@ class PoseEstimator:
         mi.set_variant('scalar_rgb')
 
         # load a scene with the model and a non-differentiable integrator
-        print('Loading template scene')
         tmplt_scene = mi.load_dict(get_scene_dict(self.model_path, self.model_type))
 
         # load the reference images
-        print('Loading reference images')
         self.refs = get_refs(self.ref_dir, self.ref_shape)
 
         # render a set of templates
@@ -66,7 +65,6 @@ class PoseEstimator:
         mi.set_variant('cuda_ad_mono')
 
         # reload the scene with a differentiable integrator
-        print('Loading optimization scene')
         sensor_dicts = [get_sensor_dict(sensor_params, self.ref_shape) for sensor_params in self.poses]
         opt_scene = mi.load_dict(get_scene_dict(self.model_path, self.model_type, sensor_dicts=sensor_dicts, differentiable=True))
 
@@ -87,8 +85,8 @@ def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_shape: (int, int)) 
 
     tmplts = []
 
-    for i in range(tmplt_count):
-
+    # add progress bar
+    for i in tqdm(range(tmplt_count), desc="Rendering templates"):
         # set the default sensor parameters
         sensor_fov = default_sensor_fov
         sensor_ppo = default_sensor_ppo
@@ -112,81 +110,78 @@ def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_shape: (int, int)) 
         # append the sensor parameters and the image statistics to the output
         tmplts.append((sensor_params, img_stats))
 
-        print(f'Rendering templates {i+1}/{tmplt_count}', end='\r')
-
-    print()
-
     return tmplts
 
 def match_poses(scene: 'mi.Scene', tmplts: list[tuple[tuple['mi.ScalarTransform4f',float,tuple[float,float],float],tuple[tuple[float,float],tuple[float,float],float]]], refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]]) -> list[tuple['mi.ScalarTransform4f',float,tuple[float,float],float]]:
     """For each reference image, find the most similar template and determine the pose.
-
+    
     Compare the image statistics of the reference images with the statistics of each template.
     Re-render each template and compare it to the reference images using the L2 loss.
-    Find the best sensor position among the templates for each reference image.
-    """
+    Find the best sensor position among the templates for each reference image."""
 
     poses = []
 
-    # iterate over all reference images
-    for i in range(len(refs)):
-        ref, ref_stats = refs[i]
+    # add progress bar
+    total_comparisons = len(refs) * len(tmplts)
+    with tqdm(total=total_comparisons, desc="Matching templates") as pbar:
+        # iterate over all reference images
+        for i in range(len(refs)):
+            ref, ref_stats = refs[i]
 
-        # access the statistics of the reference image
-        ref_com, ref_rot, ref_pixel_ratio = ref_stats
+            # access the statistics of the reference image
+            ref_com, ref_rot, ref_pixel_ratio = ref_stats
 
-        # initialize the search for the most similar template
-        best_loss = math.inf
-        best_sensor_params = None
+            # initialize the search for the most similar template
+            best_loss = math.inf
+            best_sensor_params = None
 
-        # compare all templates to the reference image
-        for j in range(len(tmplts)):
-            sensor_params, img_stats = tmplts[j]
+            # compare all templates to the reference image
+            for j in range(len(tmplts)):
+                sensor_params, img_stats = tmplts[j]
 
-            # access the sensor parameters
-            sensor_to_world, sensor_fov, sensor_ppo, sensor_distance = sensor_params
+                # access the sensor parameters
+                sensor_to_world, sensor_fov, sensor_ppo, sensor_distance = sensor_params
 
-            # access the image statistics
-            img_com, img_rot, img_pixel_ratio = img_stats
+                # access the image statistics
+                img_com, img_rot, img_pixel_ratio = img_stats
 
-            # compute the relative scale of the template and the reference
-            scale = math.sqrt(img_pixel_ratio / ref_pixel_ratio)
-            shift_scale = 2.0 * math.tan(math.radians(sensor_fov / 2.0)) * (sensor_distance * scale)
-            in_axis_translation = mi.ScalarTransform4f().translate((0.0, 0.0, sensor_distance * (1.0 - scale)))
+                # compute the relative scale of the template and the reference
+                scale = math.sqrt(img_pixel_ratio / ref_pixel_ratio)
+                shift_scale = 2.0 * math.tan(math.radians(sensor_fov / 2.0)) * (sensor_distance * scale)
+                in_axis_translation = mi.ScalarTransform4f().translate((0.0, 0.0, sensor_distance * (1.0 - scale)))
 
-            # compute the in-plane shift to center the silhouette
-            center_translation = mi.ScalarTransform4f().translate((img_com[1] * -shift_scale, img_com[0] * -shift_scale, 0.0))
+                # compute the in-plane shift to center the silhouette
+                center_translation = mi.ScalarTransform4f().translate((img_com[1] * -shift_scale, img_com[0] * -shift_scale, 0.0))
 
-            # compute the relative rotation of the template and the reference
-            rotation = math.atan2(img_rot[0] * ref_rot[1] - img_rot[1] * ref_rot[0], img_rot[0] * ref_rot[0] + img_rot[1] * ref_rot[1])
-            in_plane_rotation = mi.ScalarTransform4f().rotate((0, 0, 1), math.degrees(rotation))
+                # compute the relative rotation of the template and the reference
+                rotation = math.atan2(img_rot[0] * ref_rot[1] - img_rot[1] * ref_rot[0], img_rot[0] * ref_rot[0] + img_rot[1] * ref_rot[1])
+                in_plane_rotation = mi.ScalarTransform4f().rotate((0, 0, 1), math.degrees(rotation))
 
-            # compute the in-plane shift to match the reference's center of mass
-            ref_match_translation = mi.Transform4f().translate((ref_com[1] * shift_scale, ref_com[0] * shift_scale, 0.0))
+                # compute the in-plane shift to match the reference's center of mass
+                ref_match_translation = mi.Transform4f().translate((ref_com[1] * shift_scale, ref_com[0] * shift_scale, 0.0))
 
-            # update the sensor parameters
-            sensor_to_world = sensor_to_world @ in_axis_translation @ center_translation @ in_plane_rotation @ ref_match_translation
-            sensor_distance = sensor_distance * scale
+                # update the sensor parameters
+                sensor_to_world = sensor_to_world @ in_axis_translation @ center_translation @ in_plane_rotation @ ref_match_translation
+                sensor_distance = sensor_distance * scale
 
-            # load the updated sensor
-            sensor_params = (sensor_to_world, sensor_fov, sensor_ppo, sensor_distance)
-            sensor = mi.load_dict(get_sensor_dict(sensor_params, ref.shape))
+                # load the updated sensor
+                sensor_params = (sensor_to_world, sensor_fov, sensor_ppo, sensor_distance)
+                sensor = mi.load_dict(get_sensor_dict(sensor_params, ref.shape))
 
-            # render the modified template
-            img = 1 - mi.render(scene, sensor=sensor)[:, :, 0]
+                # render the modified template
+                img = 1 - mi.render(scene, sensor=sensor)[:, :, 0]
 
-            # compute the L2 loss
-            loss = np.mean(np.square(ref - img))
+                # compute the L2 loss
+                loss = np.mean(np.square(ref - img))
 
-            if loss < best_loss:
-                best_loss = loss
-                best_sensor_params = sensor_params
+                if loss < best_loss:
+                    best_loss = loss
+                    best_sensor_params = sensor_params
+                
+                # update progress bar
+                pbar.update(1)
 
-            print(f'Matching templates {i*len(tmplts)+j+1}/{len(refs)*len(tmplts)}', end='\r')
-
-        poses.append(best_sensor_params)
-
-    print()
+            poses.append(best_sensor_params)
 
     return poses
 
@@ -220,29 +215,28 @@ def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple
         opt['translation'] = mi.Point3f(0.0, 0.0, 0.0)
 
         # optimize the rotation and translation of the model
-        for j in range(opt_iters):
+        with tqdm(range(opt_iters), desc=f"Optimizing view {i+1}/{len(refs)}") as pbar:
+            for j in pbar:
+                # constrain the optimization parameters
+                opt['rotation'] = dr.normalize(opt['rotation'])
 
-            # constrain the optimization parameters
-            opt['rotation'] = dr.normalize(opt['rotation'])
+                # compute the optimized transform
+                transform = mi.Transform4f().translate(opt['translation']) @ mi.Transform4f(dr.quat_to_matrix(opt['rotation']))
 
-            # compute the optimized transform
-            transform = mi.Transform4f().translate(opt['translation']) @ mi.Transform4f(dr.quat_to_matrix(opt['rotation']))
+                # transform the model in the scene and update
+                params['model.vertex_positions'] = dr.ravel(transform @ vertex_positions)
+                params.update()
 
-            # transform the model in the scene and update
-            params['model.vertex_positions'] = dr.ravel(transform @ vertex_positions)
-            params.update()
+                # render the image
+                img = 1 - mi.render(scene=scene, params=params, sensor=i, seed=j)[:, :, 0]
 
-            # render the image
-            img = 1 - mi.render(scene=scene, params=params, sensor=i, seed=j)[:, :, 0]
+                # compute the loss and take a gradient descent step
+                loss = dr.mean(dr.square(ref - img))
+                dr.backward(loss)
+                opt.step()
 
-            # compute the loss and take a gradient descent step
-            loss = dr.mean(dr.square(ref - img))
-            dr.backward(loss)
-            opt.step()
-
-            print(f'Optimizing view {i+1}/{len(refs)} progress {j+1}/{opt_iters} loss {loss}', end='\r')
-
-        print()
+                # Add progress information to progress bar description
+                pbar.set_description(f"Optimizing view {i+1}/{len(refs)} (loss: {loss.array[0]:.6f})")
 
         # update the sensor with the optimized pose
         opt_transforms.append(mi.ScalarTransform4f(dr.slice((transform.inverse() @ params[f'sensor{i}.to_world']).matrix, 0)))
