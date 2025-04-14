@@ -3,7 +3,7 @@ import drjit as dr
 import numpy as np
 import scipy.ndimage as ndimage
 import os, math, random
-from tqdm import tqdm  # Add this import
+from tqdm import tqdm
 
 # set the initial learning rate for the Adam optimizers
 learning_rate = 0.025
@@ -11,7 +11,6 @@ learning_rate = 0.025
 # define reasonable defaults for the sensor parameters
 default_sensor_fov = 40
 default_sensor_ppo = (0, 0)
-default_sensor_distance = 1
 
 class PoseEstimator:
     """Estimate the pose of the camera relative to the object in the binary reference images."""
@@ -85,20 +84,26 @@ def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_shape: (int, int)) 
 
     tmplts = []
 
+    # get the bounding sphere of the scene
+    scene_bsphere = scene.bbox().bounding_sphere()
+    origin = scene_bsphere.center
+
     # initialize the progress bar
     for i in tqdm(range(tmplt_count), desc='Rendering templates'):
 
         # set the default sensor parameters
         sensor_fov = default_sensor_fov
         sensor_ppo = default_sensor_ppo
-        sensor_distance = default_sensor_distance
+
+        # position the sensor at the right distance to view the whole scene
+        sensor_distance = scene_bsphere.radius / math.tan(math.radians(sensor_fov / 2.0))
 
         # generate a uniformly distributed random point on the unit sphere
         square_point = mi.Point2f(random.random(), random.random())
         sphere_point = sensor_distance * mi.warp.square_to_uniform_sphere(square_point)
 
-        # position the sensor on the unit sphere looking at the origin
-        sensor_to_world = mi.Transform4f().look_at(sphere_point, (0, 0, 0), (1, 0, 0))
+        # position the sensor on a sphere centered on the scene
+        sensor_to_world = mi.Transform4f().look_at(sphere_point + origin, origin, dr.cross(sphere_point + origin, origin))
 
         # load the sensor
         sensor_params = (sensor_to_world, sensor_fov, sensor_ppo, sensor_distance)
