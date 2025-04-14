@@ -85,8 +85,9 @@ def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_shape: (int, int)) 
 
     tmplts = []
 
-    # add progress bar
-    for i in tqdm(range(tmplt_count), desc="Rendering templates"):
+    # initialize the progress bar
+    for i in tqdm(range(tmplt_count), desc='Rendering templates'):
+
         # set the default sensor parameters
         sensor_fov = default_sensor_fov
         sensor_ppo = default_sensor_ppo
@@ -114,16 +115,19 @@ def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_shape: (int, int)) 
 
 def match_poses(scene: 'mi.Scene', tmplts: list[tuple[tuple['mi.ScalarTransform4f',float,tuple[float,float],float],tuple[tuple[float,float],tuple[float,float],float]]], refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]]) -> list[tuple['mi.ScalarTransform4f',float,tuple[float,float],float]]:
     """For each reference image, find the most similar template and determine the pose.
-    
+
     Compare the image statistics of the reference images with the statistics of each template.
     Re-render each template and compare it to the reference images using the L2 loss.
-    Find the best sensor position among the templates for each reference image."""
+    Find the best sensor position among the templates for each reference image.
+    """
 
     poses = []
 
-    # add progress bar
     total_comparisons = len(refs) * len(tmplts)
-    with tqdm(total=total_comparisons, desc="Matching templates") as pbar:
+
+    # initialize the progress bar
+    with tqdm(total=total_comparisons, desc='Matching templates') as pbar:
+
         # iterate over all reference images
         for i in range(len(refs)):
             ref, ref_stats = refs[i]
@@ -177,8 +181,8 @@ def match_poses(scene: 'mi.Scene', tmplts: list[tuple[tuple['mi.ScalarTransform4
                 if loss < best_loss:
                     best_loss = loss
                     best_sensor_params = sensor_params
-                
-                # update progress bar
+
+                # update the progress bar
                 pbar.update(1)
 
             poses.append(best_sensor_params)
@@ -215,8 +219,9 @@ def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple
         opt['translation'] = mi.Point3f(0.0, 0.0, 0.0)
 
         # optimize the rotation and translation of the model
-        with tqdm(range(opt_iters), desc=f"Optimizing view {i+1}/{len(refs)}") as pbar:
+        with tqdm(range(opt_iters), desc=f'Optimizing view {i+1}/{len(refs)}') as pbar:
             for j in pbar:
+
                 # constrain the optimization parameters
                 opt['rotation'] = dr.normalize(opt['rotation'])
 
@@ -235,8 +240,8 @@ def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple
                 dr.backward(loss)
                 opt.step()
 
-                # Add progress information to progress bar description
-                pbar.set_description(f"Optimizing view {i+1}/{len(refs)} (loss: {loss.array[0]:.6f})")
+                # add progress information to progress bar description
+                pbar.set_description(f'Optimizing view {i+1}/{len(refs)} (loss: {loss.array[0]:.6f})')
 
         # update the sensor with the optimized pose
         opt_transforms.append(mi.ScalarTransform4f(dr.slice((transform.inverse() @ params[f'sensor{i}.to_world']).matrix, 0)))
