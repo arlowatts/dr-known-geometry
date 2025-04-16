@@ -23,7 +23,7 @@ def create_scene(bsdf_parameters, model, resolution, camera_positions):
             'scale': 1.0
         },
         'object': {
-            'to_world': mi.ScalarTransform4f.scale(10.0),
+            'to_world': mi.ScalarTransform4f().scale(mi.ScalarPoint3f(10.0, 10.0, 10.0)),
             'bsdf': bsdf_parameters
         }
     }
@@ -47,7 +47,7 @@ def create_scene(bsdf_parameters, model, resolution, camera_positions):
 def load_sensor(camera_position, resolution):
     return mi.load_dict({
             'type': 'perspective',
-            'to_world': mi.ScalarTransform4f.look_at(origin=camera_position, target=(0, 0, 0), up=(0, 1, 0)),
+            'to_world': mi.ScalarTransform4f().look_at(origin=camera_position, target=(0, 0, 0), up=(0, 1, 0)),
             'film': {
                 'type': 'hdrfilm',
                 'width': resolution[0],
@@ -59,10 +59,17 @@ def load_sensor(camera_position, resolution):
 def visualize_target_images(target_images):
     '''Visualize the target images'''
     fig, axs = plt.subplots(1, len(target_images), figsize=(10, 5))
-    for i, target_image in enumerate(target_images):
-        axs[i].imshow(target_image, cmap='gray')
-        axs[i].axis('off')
-        axs[i].set_title(f'Camera {i}')
+    
+    # Handle the case where there's only one image
+    if len(target_images) == 1:
+        axs.imshow(target_images[0], cmap='gray')
+        axs.axis('off')
+        axs.set_title('Camera 0')
+    else:
+        for i, target_image in enumerate(target_images):
+            axs[i].imshow(target_image, cmap='gray')
+            axs[i].axis('off')
+            axs[i].set_title(f'Camera {i}')
 
 # images = get_data(bsdf_parameters)
 

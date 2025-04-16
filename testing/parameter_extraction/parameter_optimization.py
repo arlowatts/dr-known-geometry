@@ -1,609 +1,409 @@
-# Imports
 import mitsuba as mi
 import drjit as dr
 import matplotlib.pyplot as plt
 import numpy as np
 import random
-import os
-import glob
+import math
 import time
-from PIL import Image
+import tqdm
+import glob
 
-# Timer for execution time
-start_time = time.time()
+from pose_estimation import PoseEstimator
 
-# Setting variant - NVIDIA GPU only
-mi.set_variant('cuda_ad_rgb')
-
-#-------------------------------- HELPER FUNCTIONS --------------------------------
-def img_to_bitmap(img_path):
-    """Converts an image to a Mitsuba bitmap"""
-    img = plt.imread(img_path)
-    return mi.Bitmap(img)
-
-def get_resolution(i, max_iter, min_res=16, max_res=50):
-    """Returns the resolution to be used based on current iteration"""
-
-    if i < max_iter * 0.3:  # First 30% - lowest resolution
-        return min_res
-    elif i < max_iter * 0.8:  # Next 50% - medium resolution
-        return int(min_res + (max_res - min_res) * 0.5)
-    else:  # Final 20% - full resolution
-        return max_res
-
-def get_spp(i, max_iter, min_spp=8, max_spp=256):
-    """Returns the samples per pixel to be used based on current iteration"""
-
-    progress = i / max_iter
-    if progress < 0.3:  # First 30% - very low samples
-        return min_spp
-    elif progress < 0.6:  # Next 30% - more samples
-        return int(min_spp + (max_spp - min_spp) * 0.5)
-    elif progress < 0.8:  # Next 20% - high samples
-        return int(min_spp + (max_spp - min_spp) * 0.75)
-    else:  # Final 20% - maximum samples
-        return max_spp
-
-def get_learning_rate(i, max_iter, start_lr=0.05, end_lr=0.001, schedule='exponential'):
-    """Returns the learning rate to be used based on current iteration"""
-
-    progress = i / max_iter
-    
-    # Different types for experimentation
-    if schedule == 'linear':
-        # Linear decay
-        return start_lr - (start_lr - end_lr) * progress
-    elif schedule == 'exponential':
-        # Exponential decay
-        return start_lr * (end_lr / start_lr) ** progress
-    elif schedule == 'cosine':
-        # Cosine annealing
-        return end_lr + 0.5 * (start_lr - end_lr) * (1 + np.cos(progress * np.pi))
-    else:
-        # Default to linear
-        return start_lr - (start_lr - end_lr) * progress
-
-def get_env_resolution(i, max_iter, min_res=32, max_res=128):
-    """Returns the environment map resolution based on current iteration"""
-    progress = i / max_iter
-
-    if progress < 0.3:
-        return min_res
-    elif progress < 0.6:
-        return int(min_res + (max_res - min_res) * 0.5)
-    else:
-        return max_res
-    
-def upsample_environment_map(env_tensor, new_height, new_width):
-    """Upsamples environment map to new resolution"""
-    # Convert to numpy for easy manipulation
-    current_data = env_tensor.numpy()
-    current_height, current_width = current_data.shape[:2]
-    
-    # Create new array with target dimensions
-    new_data = np.zeros((new_height, new_width, 3), dtype=np.float32)
-    
-    # Simple bilinear interpolation (you could use scipy.ndimage.zoom for better results)
-    for y in range(new_height):
-        for x in range(new_width):
-            src_y = (y / new_height) * current_height
-            src_x = (x / new_width) * current_width
-            
-            # Get four nearest neighbors
-            y0, y1 = int(src_y), min(int(src_y) + 1, current_height - 1)
-            x0, x1 = int(src_x), min(int(src_x) + 1, current_width - 1)
-            
-            # Calculate interpolation weights
-            wy = src_y - y0
-            wx = src_x - x0
-            
-            # Interpolate
-            new_data[y, x] = (1-wy)*(1-wx)*current_data[y0, x0] + \
-                             (1-wy)*wx*current_data[y0, x1] + \
-                             wy*(1-wx)*current_data[y1, x0] + \
-                             wy*wx*current_data[y1, x1]
-    
-    return mi.TensorXf(new_data)
-
-def mse(image1, image2):
-    """Returns Mean squared error between two images"""
-    return dr.mean(dr.sqr(image1 - image2))
-
-def l1(image1, image2):
-    """Returns L1 loss between two images"""
-    return dr.mean(dr.abs(image1 - image2))
-
-def find_first_obj_file(directory):
-    """Finds the first OBJ file in the specified directory"""
-    if not os.path.exists(directory):
-        return None
-    
-    obj_files = glob.glob(os.path.join(directory, "*.obj"))
-    if obj_files:
-        return obj_files[0]
-    
-    return None
-
-def find_first_exr_file(directory):
-    """Finds the first EXR file in the specified directory"""
-    if not os.path.exists(directory):
-        return None
-    
-    exr_files = glob.glob(os.path.join(directory, "*.exr"))
-    if exr_files:
-        return exr_files[0]
-    
-    return None
-
-def create_differentiable_texture(resolution=16):
-    """Creates a low-resolution differentiable texture for optimization
-    idea: since the environment has a sky, the lower half of the texture could probably be darker"""
-    texture = np.ones((resolution, resolution * 2, 3), dtype=np.float32) * 0.05
-    texture[:resolution//2] *= 5.0
-    return texture
-
-def convert_numpy_to_bitmap(array):
-    """Convert numpy array or Mitsuba tensor to Mitsuba bitmap"""
-    if isinstance(array, np.ndarray):
-        if array.dtype != np.float32:
-            array = array.astype(np.float32)
-        return mi.Bitmap(array)
-    elif isinstance(array, mi.TensorXf):
-        # Already a Mitsuba tensor, just create bitmap
-        return mi.Bitmap(array)
-    else:
-        raise TypeError(f"Unsupported type {type(array)} for convert_numpy_to_bitmap")
-
-def downsample(image, factor):
-    """Downsamples a tensor image by a given factor using NumPy reshaping."""
-    # Convert to numpy
-    np_image = image.numpy()
-    H, W, C = np_image.shape
-    new_H = H // factor
-    new_W = W // factor
-    
-    # Ensure dimensions are divisible by factor
-    if H % factor != 0 or W % factor != 0:
-        H_valid = (H // factor) * factor
-        W_valid = (W // factor) * factor
-        np_image = np_image[:H_valid, :W_valid, :]
-    
-    # Reshape and compute mean
-    reshaped = np_image.reshape(new_H, factor, new_W, factor, C)
-    downsampled = reshaped.mean(axis=(1, 3))
-    
-    # Convert back to DrJIT tensor
-    return mi.TensorXf(downsampled)
-
-def bitmap_to_numpy(bitmap):
-    """Converts a Mitsuba bitmap to a NumPy array"""
-    return (np.array(bitmap)[:, :, :3] * -1.0)
-
-def resize_image(image, new_height, new_width):
-    """Resizes an image to the specified dimensions using PIL"""
-    # Convert to numpy array
-    if isinstance(image, mi.Bitmap):
-        new_img = bitmap_to_numpy(image)
-    elif hasattr(image, 'numpy'):
-        new_img = image.numpy()
-    else:
-        new_img = np.array(image)
-    
-    # Convert to PIL image, resize, and back to numpy
-    new_img = Image.fromarray((new_img * 255).astype(np.uint8))
-    new_img = new_img.resize((new_width, new_height), Image.LANCZOS)
-    new_img = np.array(new_img) / 255.0
-    
-    # Return as Mitsuba tensor for consistency
-    return mi.TensorXf(new_img)
-
-
-# -------------------------------- SCENE CREATION --------------------------------
-
-def create_scene(bsdf_params, resolution, is_target=False, env_texture=None):
-    """Creates and returns a scene with the specified BSDF parameters and resolution"""
-
-    # Check for OBJ file in the specified directory
-    exr_path = "./testing/parameter_extraction/env/quarry_cloudy_4k.exr"
-    model_path = find_first_obj_file("./testing/parameter_extraction/model")
-    model_path = None
-    
-    scene_dict = {
-        'type': 'scene',
-        'integrator': {
-            'type': 'path'
+DEFAULT_PARAMETER_OPTIMIZATION_SETTINGS = {
+    'resolution': (128, 128),
+    'num_iterations': 200,
+    'learning_rate': 0.01,
+    'spp': 64,
+    'camera_distance': 2.0,
+    'scale_factor': 5.0,
+    'integrator_max_depth': 2,
+    'optimization_stages': {
+        '1': {
+            'parameters': [
+                'object.bsdf.base_color.value'
+            ],
+            'percent': 0.1
         },
-        'sensor': {
-            'type': 'perspective',
-            'fov': 45,
-            'to_world': mi.ScalarTransform4f.look_at(
-                origin=[0, 0, 4],
-                target=[0, 0, 0],
-                up=[0, 1, 0]
-            ),
-            'film': {
-                'type': 'hdrfilm',
-                'width': resolution,
-                'height': resolution,
-            }
-        },
-    }
-    
-    # Add environment map based on whether this is target or optimization
-    if is_target:
-        # For target scene, use the 4k environment map
-        scene_dict['envmap'] = {
-            'type': 'envmap',
-            'filename': exr_path,
-            'scale': 1.0
-        }
-    else:
-        # For optimization scene, use a differentiable texture
-        if env_texture is None:
-            # If no texture provided, create a default bitmap
-            env_texture = create_differentiable_texture()
-        
-        bitmap = convert_numpy_to_bitmap(env_texture)
-        
-        scene_dict['envmap'] = {
-            'type': 'envmap',
-            'bitmap': bitmap,
-            'scale': 1.0
-        }
-    
-    # Default to a primitive if no OBJ model is found
-    if model_path:
-        scene_dict['object'] = {
-            'type': 'obj',
-            'filename': model_path,
-            'to_world': mi.ScalarTransform4f.scale(1.0).rotate([0, 1, 0], 30).rotate([1, 0, 0], 20),
-            'bsdf': bsdf_params
-        }
-    else:
-        scene_dict['object'] = {
-            'type': 'sphere',
-            'to_world': mi.ScalarTransform4f.scale(1.0).rotate([0, 1, 0], 30).rotate([1, 0, 0], 20),
-            'bsdf': bsdf_params
-        }
-    
-    return mi.load_dict(scene_dict)
-
-
-# -------------------------------- SETUP --------------------------------
-
-# Define the target (img or bsdf)
-target_bsdf = {
-    'type': 'principled',
-    'base_color': {
-        'type': 'rgb',
-        'value': [random.uniform(0.0, 1.0), random.uniform(0.0, 1.0), random.uniform(0.0, 1.0)]
-    },
-    'roughness': random.uniform(0.0, 1.0),
-    'metallic': random.uniform(0.0, 1.0),
-    'spec_tint': random.uniform(0.0, 1.0),
-    'specular': random.uniform(0.0, 1.0),
-    'anisotropic': random.uniform(0.0, 1.0),
-    # 'sheen': random.uniform(0.0, 1.0),
-    # 'sheen_tint': random.uniform(0.0, 1.0),
-    # 'clearcoat': random.uniform(0.0, 1.0),
-    # 'clearcoat_gloss': random.uniform(0.0, 1.0)
-}
-source_img = img_to_bitmap("./testing/parameter_extraction/targets/sphere.jpg")
-
-# Define an initial BSDF for optimization
-initial_bsdf = {
-    'type': 'principled',
-    'base_color': {
-        'type': 'rgb',
-        'value': [0.5, 0.5, 0.5]
-    },
-    'roughness': 0.5,
-    'metallic': 0.5,
-    'spec_tint': 0.0,
-    'specular': 0.5,
-    'anisotropic': 0.5,
-    # 'sheen': 0.5,
-    # 'sheen_tint': 0.5,
-    # 'clearcoat': 0.5,
-    # 'clearcoat_gloss': 0.5
-}
-
-# Store target parameters for comparison
-target_params = target_bsdf.copy()
-initial_params = initial_bsdf.copy()
-
-print("\n\nTarget parameters:")
-for key, value in target_params.items():
-    if key != 'type':
-        if key == 'base_color':
-            print(f"  {key}: {value['value']}")
-        else:
-            print(f"  {key}: {value}")
-
-print("\n\nInitial parameters:")
-for key, value in initial_params.items():
-    if key != 'type':
-        if key == 'base_color':
-            print(f"  {key}: {value['value']}")
-        else:
-            print(f"  {key}: {value}")
-
-# Optimization settings
-max_iterations = 45 # phase 2
-env_only_iterations = 20  # phase 1
-min_res = 16     # Starting resolution
-max_res = 128    # Final resolution
-min_spp = 4      # Starting samples per pixel
-max_spp = 32   # Final samples per pixel
-
-# Initialize with very small environment texture
-env_texture_height = 32  # Starting height
-env_texture_width = env_texture_height * 2
-env_texture = mi.TensorXf(create_differentiable_texture(env_texture_height))
-
-# Matplotlib setup for visualization
-plt.ion()
-fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-axes[0].set_title("Target")
-axes[0].axis('off')
-
-axes[1].set_title("Current")
-axes[1].axis('off')
-
-axes[2].set_title("Difference")
-axes[2].axis('off')
-
-plt.tight_layout()
-plt.show(block=False)
-
-loss_values = []
-
-# ------------------------------- OPTIMIZATION LOOP -------------------------------
-previous_res = None
-opt = None
-params = None
-
-for i in range(max_iterations + env_only_iterations):
-    # Update resolution, spp and learning rate for this iteration
-    current_res = get_resolution(i, max_iterations, min_res, max_res)
-    current_spp = get_spp(i, max_iterations, min_spp, max_spp)
-    current_lr = get_learning_rate(i, max_iterations, start_lr=0.05, end_lr=0.001, schedule='exponential')
-    
-    # Check if we need to update environment map resolution
-    new_env_height = get_env_resolution(i, env_only_iterations)
-    new_env_width = new_env_height * 2
-
-    if new_env_height * 2 != env_texture.shape[0]:
-        print(f"Upscaling environment map from {env_texture.shape[0]}x{env_texture.shape[1]} to {new_env_height}x{new_env_width}")
-        # Upsample environment map
-        env_texture = upsample_environment_map(env_texture, new_env_height, new_env_width)
-        
-        # Force scene recreation
-        previous_res = None
-    
-    # Re-create scenes if resolution changes or at the start
-    if previous_res != current_res or i == 0 or i == env_only_iterations:
-        # Create target scene with current resolution (with real environment map)
-        if source_img is None:
-            target_scene = create_scene(target_bsdf, current_res, is_target=True)
-            target_img = mi.render(target_scene, spp=256)  # Use higher SPP for target
-        else:
-            # resize existing target image
-            target_img = resize_image(source_img, current_res, current_res)
-        
-        # Create optimization scene with current resolution
-        scene = create_scene(initial_bsdf, current_res, is_target=False, env_texture=env_texture)
-        
-        # Set up optimization parameters
-        params = mi.traverse(scene)
-
-        # Keep only environment parameters during the first phase
-        if i < env_only_iterations:
-            print(f"Phase 1: Optimizing environment map")
-            params.keep([
+        '2': {
+            'parameters': [
                 'envmap.data',
                 'envmap.scale',
                 'object.bsdf.base_color.value',
-            ])
-        else:
-            # Keep all differentiable parameters for second phase
-            print(f"Phase 2: Optimizing BSDF")
-            params.keep([
+                'object.bsdf.roughness.value',
+                'object.bsdf.metallic.value',
+
+            ],
+            'percent': 0.4
+        },
+        '3': {
+            'parameters': [
+                'envmap.data',
+                'envmap.scale',
                 'object.bsdf.base_color.value',
                 'object.bsdf.roughness.value',
                 'object.bsdf.metallic.value',
                 'object.bsdf.spec_tint.value',
                 'object.bsdf.specular',
                 'object.bsdf.anisotropic.value',
-                # 'object.bsdf.sheen.value',
-                # 'object.bsdf.sheen_tint.value',
-                # 'object.bsdf.clearcoat.value',
-                # 'object.bsdf.clearcoat_gloss.value',
-                'envmap.data',
-                'envmap.scale',
-            ])
+                'object.bsdf.sheen.value',
+                'object.bsdf.sheen_tint.value',
+                'object.bsdf.clearcoat.value',
+                'object.bsdf.clearcoat_gloss.value'
+            ],
+            'percent': 1.0
+        }
+    },
+    'initial_bsdf': {
+        'type': 'principled',
+        'base_color': {
+            'type': 'rgb',
+            'value': [0.5, 0.5, 0.5]
+        },
+        'roughness': 0.5,
+        'metallic': 0.5,
+        'spec_tint': 0.5,
+        'specular': 0.5,
+        'anisotropic': 0.5,
+        'sheen': 0.5,
+        'sheen_tint': 0.5,
+        'clearcoat': 0.5,
+        'clearcoat_gloss': 0.5
+    }
+}
+
+DEFAULT_POSE_ESTIMATION_SETTINGS = {
+    'model_path': 'model/bunny.ply', # file path of the 3D model (must be appropriately scaled and centered)
+    'model_type': 'ply',        # file type of the 3D model ('obj' or 'ply')
+    'ref_dir': 'images/masks/', # directory containing the reference masks
+    'ref_shape': (128, 128),    # dimensions of reference masks after resampling
+    'tmplt_count': 256,         # number of initial templates to render
+    'tmplt_shape': (128, 128),  # dimensions of rendered templates
+    'opt_iters': 100,           # number of optimization iterations to optimize each reference mask
+}
+
+class ParameterOptimizer():
+    def __init__(self, target_images, model_path, settings=None):
+
+        # initialize the class with default settings
+        self.settings = {
+            'parameter_optimization': DEFAULT_PARAMETER_OPTIMIZATION_SETTINGS.copy(),
+            'pose_estimation': DEFAULT_POSE_ESTIMATION_SETTINGS.copy(),
+        }
+
+        # update the settings with the passed arguments
+        if settings:
+            if 'parameter_optimization' in settings:
+                self.settings['parameter_optimization'].update(settings['parameter_optimization'])
+            if 'pose_estimation' in settings:
+                self.settings['pose_estimation'].update(settings['pose_estimation'])
+
+        # convert the pixel format and component format, and resample the target images with a box filter
+        self.rfilter = mi.scalar_rgb.load_dict({'type': 'box'})
+        resolution = self.settings['parameter_optimization']['resolution']
+        self.target_images = [target_images[i].convert(pixel_format=mi.Bitmap.PixelFormat.RGB,
+                                                      component_format=mi.Struct.Type.Float32).resample(
+                                                      [resolution[0], resolution[1]], self.rfilter)
+                              for i in range(len(target_images))]
+
+        # Load masks for optimization
+        self.masks = []
+        for i in range(len(target_images)):
+            mask_path = f'images/masks/mask_{i:02d}.png'
+            try:
+                mask = mi.Bitmap(mask_path).convert(pixel_format=mi.Bitmap.PixelFormat.RGB,
+                                                  component_format=mi.Struct.Type.Float32).resample(
+                                                  [resolution[0], resolution[1]], self.rfilter)
+                self.masks.append(mask)
+            except Exception as e:
+                print(f"Warning: Could not load mask {mask_path}. Error: {e}")
+                # Create empty mask if file not found (all ones)
+                mask = mi.Bitmap(np.ones((resolution[1], resolution[0], 3), dtype=np.float32))
+                self.masks.append(mask)
+
+        # set the model path
+        self.model_path = model_path
+
+        # get camera positions using pose estimation
+        self.camera_positions = self.pose_estimation()
+
+        # Initialize BSDF parameters from settings
+        self.bsdf_parameters = self.settings['parameter_optimization']['initial_bsdf']
+
+        # Get optimization stages from settings
+        self.optimization_stages = self.settings['parameter_optimization']['optimization_stages']
+
+        self.progress_images = []
+        self.losses = []
+
+    def run(self, num_iterations=None):
+        if num_iterations is None:
+            num_iterations = self.settings['parameter_optimization']['num_iterations']
+
+        # Create the scene
+        self.create_scene(self.model_path, self.camera_positions)
+
+        # Dictionary to store the final optimized parameters
+        self.optimized_parameters = {}
         
-        # Create new optimizer or update existing one
-        if opt is None:
-            opt = mi.ad.Adam(lr=current_lr)
+        # progress bar
+        pbar = tqdm.tqdm(total=num_iterations, desc="Parameter optimization")
+
+        for i in range(num_iterations):
+            stage = self.get_stage(i, num_iterations)
+
+            params = mi.traverse(self.scene)
+            params.keep(self.optimization_stages[stage]['parameters'])
+
+            lr = self.settings['parameter_optimization']['learning_rate']
+            opt = mi.ad.Adam(lr=lr)
             for key in params.keys():
-                opt[key] = params[key]
-        else:
-            # Transfer parameters from previous optimizer
-            new_opt = mi.ad.Adam(lr=current_lr)
-            for key in params.keys():
-                if key in opt:
-                    new_opt[key] = opt[key]
+                opt[key] = dr.clip(params[key], 0.0, 1.0) if 'object.bsdf' in key else params[key]
+
+            params.update(opt)
+
+            random_idx = random.randint(0, len(self.camera_positions) - 1)
+            image = self.render(self.scene, self.sensors[random_idx], params)
+            self.progress_images.append(mi.Bitmap(image))
+
+            target_img = mi.TensorXf(self.target_images[random_idx])
+            # get mask for the current image
+            mask_img = mi.TensorXf(self.masks[random_idx])
+            
+            # apply mask to both rendered and target images before computing loss
+            masked_image = image * mask_img
+            masked_target = target_img * mask_img
+            
+            # Compute loss
+            loss = dr.mean(dr.square(masked_image - masked_target))
+            self.losses.append(loss.array[0])
+            dr.backward(loss)
+            opt.step()
+            params.update(opt)
+            
+            # update progress bar
+            pbar.set_description(f"Optimizing BSDF (loss: {loss.array[0]:.6f})")
+            pbar.update(1)
+
+            # Store the current values of the parameters
+            if i == num_iterations - 1:
+                for key in params.keys():
+                    self.optimized_parameters[key] = params[key]
+        
+        pbar.close()
+        return self.progress_images
+
+    def get_optimized_parameters(self):
+        """Return the optimized BSDF parameters as a dictionary."""
+        if not hasattr(self, 'optimized_parameters'):
+            return None
+
+        result = {}
+        for key, value in self.optimized_parameters.items():
+            if 'object.bsdf' in key:
+                # Extract parameter name from the key
+                param_name = key.split('object.bsdf.')[-1]
+
+                # Convert DrJit arrays to Python values
+                if hasattr(value, 'array'):
+                    if len(value.array) == 3:
+                        result[param_name] = [value.array[0].array[0],
+                                             value.array[1].array[0],
+                                             value.array[2].array[0]]
+                    else:
+                        result[param_name] = value.array[0]
                 else:
-                    # For new parameters that weren't in previous optimizer
-                    new_opt[key] = params[key]
-            opt = new_opt
+                    result[param_name] = value
 
-        params.update(opt)
-    
-    # Render with current parameters
-    image = mi.render(scene, params, spp=current_spp)
-    
-    # Compute loss
-    loss = l1(image, target_img)
-    loss_values.append(loss)
+        return result
 
-    # Backpropagate
-    dr.backward(loss)
-    
-    # set learning rate to zero for individual parameters
+    def render(self, scene, sensor, params):
+        spp = self.settings['parameter_optimization']['spp']
+        return mi.render(scene, sensor=sensor, params=params, spp=spp)
 
-    # Step optimizer
-    if i >= env_only_iterations:
-        # In Phase 2, zero out gradients for environment map
-        dr.set_grad(params['envmap.data'], 0)
-        dr.set_grad(params['envmap.scale'], 0)
-        
-        # Store current env map values before optimization step
-        # Use dr.detach() to create copies of the tensors
-        env_data_backup = dr.detach(opt['envmap.data'])
-        env_scale_backup = dr.detach(opt['envmap.scale'])
-        
-        # Perform optimization step (will modify all parameters)
-        opt.step()
-        
-        # Restore environment map parameters to their pre-step values
-        opt['envmap.data'] = env_data_backup
-        opt['envmap.scale'] = env_scale_backup
-    else:
-        # In Phase 1, just do the regular optimization step
-        opt.step()
-    
-    # Apply constraints to parameters -> clipping to [0, 1]
-    for key in params.keys():
-        if 'base_color' in key or 'envmap.data' in key:  # Handle environment texture values
-            opt[key] = dr.clip(opt[key], 0.0, 1.0)
-        elif 'scale' in key:  # Environment map scale should be positive
-            opt[key] = dr.maximum(opt[key], 0.0)
-        elif any(param in key for param in ['roughness.value', 'metallic.value', 'spec_tint.value', 'specular', 
-                                        'anisotropic.value', 'sheen.value', 'sheen_tint.value', 
-                                        'clearcoat.value', 'clearcoat_gloss.value']):
-            opt[key] = dr.clip(opt[key], 0.0, 1.0)
-    
-    # Update scene parameters
-    params.update(opt)
-    
-    # Compute difference for visualization -> multiplied by 5 for better visibility
-    diff = np.abs(image.numpy() - target_img.numpy()) * 5
-    
-    # Update visualization -> ^0.4545 for gamma correction
-    axes[0].imshow(target_img ** (1.0/2.2))
-    axes[1].imshow(image ** (1.0/2.2))
-    axes[2].imshow(np.clip(diff, 0, 1))
-    
-    print(f"\nIteration {i}:")
-    print(f"  Resolution: {current_res}x{current_res}")
-    print(f"  Samples per pixel: {current_spp}")
-    print(f"  Learning rate: {current_lr:.6f}")
-    print(f"  Loss: {loss}")
+    def create_scene(self, model, camera_transforms):
+        '''Create a Mitsuba scene with the given model filepath and resolution'''
 
-    # Print current status
-    if i % 5 == 0 or i == max_iterations - 1:
-        # Print current parameters
-        for key in params.keys():
-            if isinstance(params[key], mi.TensorXf) and len(params[key]) == 3:  # RGB value
-                print(f"  {key}: [{params[key][0]}, {params[key][1]}, {params[key][2]}]")
-            else:
-                print(f"  {key}: {params[key][0]}")
-    
-    fig.canvas.draw_idle()
-    plt.pause(0.001)
-    
-    # Store current resolution for next iteration
-    previous_res = current_res
+        scene = {
+            'type': 'scene',
+            'integrator': {
+                'type': 'path',
+                'max_depth': self.settings['parameter_optimization']['integrator_max_depth']
+            },
+            'envmap': {
+                'type': 'envmap',
+                'bitmap': mi.Bitmap(np.ones((128, 64, 3), dtype=np.float32) * 0.5),
+                'scale': 1.0
+            },
+            'object': {
+                'to_world': mi.ScalarTransform4f().scale(self.settings['parameter_optimization']['scale_factor']),
+                'bsdf': self.bsdf_parameters
+            }
+        }
 
-
-# -------------------------------- FINAL RENDER --------------------------------
-
-# Final render at full resolution with maximum samples
-final_res = source_img.size()[0] // 2 if source_img is not None else 512
-final_spp = 256
-print(f"\nRendering final result at {final_res}x{final_res}, {final_spp} spp")
-
-# Create scenes at full resolution
-if target_img is None:
-    target_scene = create_scene(target_bsdf, final_res, is_target=True)
-    target_img = mi.render(target_scene, spp=final_spp)
-
-scene = create_scene(initial_bsdf, final_res, is_target=False)
-params = mi.traverse(scene).copy()
-params.keep([
-    'object.bsdf.base_color.value',
-    'object.bsdf.roughness.value',
-    'object.bsdf.metallic.value',
-    'object.bsdf.spec_tint.value',
-    'object.bsdf.specular',
-    'object.bsdf.anisotropic.value',
-    # 'object.bsdf.sheen.value',
-    # 'object.bsdf.sheen_tint.value',
-    # 'object.bsdf.clearcoat.value',
-    # 'object.bsdf.clearcoat_gloss.value',
-    'envmap.data',
-    'envmap.scale',
-])
-
-# Transfer optimized parameters
-for key in params.keys():
-    params[key] = opt[key]
-
-# Render final image
-final_img = mi.render(scene, spp=final_spp)
-source_img = resize_image(source_img, final_res, final_res) if source_img is not None else target_img
-
-# Display final results
-plt.ioff()
-fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-axes[0].imshow(source_img)
-axes[0].set_title("Target Image")
-axes[0].axis('off')
-
-axes[1].imshow(final_img)
-axes[1].set_title("Optimized Result")
-axes[1].axis('off')
-
-axes[2].imshow(np.clip(np.abs(final_img.numpy() - mi.TensorXf(source_img).numpy()) * 5, 0, 1))
-axes[2].set_title("Final Difference (×5)")
-axes[2].axis('off')
-
-# display loss curve
-plt.figure()
-plt.plot(loss_values)
-plt.title("Loss Curve")
-plt.xlabel("Iteration")
-plt.ylabel("L1 Loss")
-
-plt.tight_layout()
-
-#display optimized environment map
-plt.figure()
-plt.imshow(opt['envmap.data'].numpy())
-plt.title("Optimized Environment Map")
-plt.axis('off')
-plt.show()
-
-# Print final parameter comparison
-print("\nOptimization Results:")
-print("Target parameters:")
-for key, value in target_params.items():
-    if key != 'type':
-        if key == 'base_color':
-            print(f"  {key}: {value['value']}")
+        # Default to sphere if no model is provided
+        if model:
+            scene['object']['type'] = self.settings['pose_estimation']['model_type']
+            scene['object']['filename'] = model
         else:
-            print(f"  {key}: {value}")
+            scene['object']['type'] = 'sphere'
 
-print("\nOptimized parameters:")
-for key in params.keys():
-    if isinstance(params[key], mi.TensorXf) and len(params[key]) == 3:  # RGB value
-        print(f"  {key}: [{params[key][0]}, {params[key][1]}, {params[key][2]}]")
-    else:
-        print(f"  {key}: {params[key][0]}")
+        self.scene = mi.load_dict(scene)
+        self.sensors = [self.load_sensor(camera_transform, self.settings['parameter_optimization']['resolution'])
+                        for camera_transform in camera_transforms]
+
+    def load_sensor(self, camera_transform, resolution):
+        """Create a sensor positioned to view the model as in the target image."""
+
+        return mi.load_dict({
+            'type': 'perspective',
+            'to_world': camera_transform,
+            'fov': 40,
+            'film': {
+                'type': 'hdrfilm',
+                'width': resolution[0],
+                'height': resolution[1]
+            }
+        })
+
+    def pose_estimation(self):
+        """Use PoseEstimator to determine camera transforms for each target image."""
+
+        # initialize the pose estimator
+        estimator = PoseEstimator(*self.settings['pose_estimation'].values())
+
+        # optimize the poses
+        return estimator.optimize()
+
+    def get_stage(self, iteration, num_iterations):
+        for stage, data in self.optimization_stages.items():
+            if iteration < num_iterations * data['percent']:
+                return stage
+        return list(self.optimization_stages.keys())[-1]
 
 
-end_time = time.time()
+if __name__ == '__main__':
+    model_path = r'model\bunny.ply'
+    model_type = 'ply'
 
-print(f"\n\nTotal execution time: {(end_time - start_time)/60:.2f} minutes")
+    # use a cuda variant if available, or llvm if necessary
+    mi.set_variant('cuda_ad_rgb')
+
+    # initialize the settings for the program
+    settings = {
+        'parameter_optimization': {
+            'resolution': (128, 128),
+            'num_iterations': 200,
+            'learning_rate': 0.01,
+            'spp': 64,
+            'camera_distance': 2.0,
+            'scale_factor': 1.0,
+            'integrator_max_depth': 2
+        },
+        'pose_estimation': {
+            'model_path': model_path,   # file path of the 3D model (must be appropriately scaled and centered)
+            'model_type': model_type,   # file type of the 3D model ('obj' or 'ply')
+            'ref_dir': r'images\masks', # directory containing the reference masks
+            'ref_shape': (128, 128),    # dimensions of reference masks after resampling
+            'tmplt_count': 728,         # number of initial templates to render
+            'tmplt_shape': (128, 128),  # dimensions of rendered templates
+            'opt_iters': 50,           # number of optimization iterations to optimize each reference mask
+        }
+    }
+
+    # load color images as references for the parameter optimization stage
+    image_dir = r'images/color'
+    target_images = [mi.Bitmap(img_path) for img_path in sorted(glob.glob(f'{image_dir}/*.png'))]
+
+    # create optimizer and load settings
+    start_time = time.time()
+    optimizer = ParameterOptimizer(target_images, model_path, settings)
+
+    # Run the optimization
+    progress_images = optimizer.run()
+    end_time = time.time()
+    print(f'Elapsed time: {(int(math.floor(end_time - start_time) / 60))} minutes, {int((end_time - start_time) % 60)} seconds')
+
+    # Get optimized parameters
+    optimized_params = optimizer.get_optimized_parameters()
+
+    # render final images with optimized parameters
+    final_images = []
+    for sensor_idx in range(len(optimizer.sensors)):
+        # vreate a copy of the scene with optimized parameters
+        params = mi.traverse(optimizer.scene)
+        for key, value in optimizer.optimized_parameters.items():
+            params[key] = value
+        
+        # render the image
+        rendered_image = mi.render(optimizer.scene, sensor=optimizer.sensors[sensor_idx], 
+                                   params=params, spp=256)
+        final_images.append(mi.Bitmap(rendered_image))
+
+    # load masks
+    masks = []
+    for i in range(len(optimizer.target_images)):
+        mask_path = f'images/masks/mask_{i:02d}.png'
+        mask = mi.Bitmap(mask_path).convert(pixel_format=mi.Bitmap.PixelFormat.RGB,
+                                            component_format=mi.Struct.Type.Float32).resample(
+                                            optimizer.settings['parameter_optimization']['resolution'], 
+                                            optimizer.rfilter)
+        masks.append(mask)
+
+    # display the img grid
+    fig, axs = plt.subplots(len(optimizer.target_images), 5, figsize=(25, 4*len(optimizer.target_images)))
+    
+    for i in range(len(optimizer.target_images)):
+        # if there is only one image, there isnt a list so we may run into indexing issues
+        if len(optimizer.target_images) == 1:
+            row = axs
+        else:
+            row = axs[i]
+        
+        # get mask as numpy array
+        mask_np = np.array(masks[i])
+        
+        # create masked versions of reference and rendered images
+        ref_np = np.array(optimizer.target_images[i])
+        rendered_np = np.array(final_images[i])
+        
+        ref_masked = ref_np * mask_np
+        rendered_masked = rendered_np * mask_np
+        
+        # calculate difference between masked images
+        diff = np.abs(ref_masked - rendered_masked)
+        # normalize difference
+        if np.max(diff) > 0:
+            diff = diff / np.max(diff)
+            
+
+        row[0].imshow(ref_np)
+        row[0].axis('off')
+        row[0].set_title(f'Reference {i}')
+
+        row[1].imshow(rendered_np)
+        row[1].axis('off')
+        row[1].set_title(f'Rendered {i}')
+
+        row[2].imshow(ref_masked)
+        row[2].axis('off')
+        row[2].set_title(f'Masked Reference {i}')
+
+        row[3].imshow(rendered_masked)
+        row[3].axis('off')
+        row[3].set_title(f'Masked Rendered {i}')
+
+        row[4].imshow(diff, cmap='hot')
+        row[4].axis('off')
+        row[4].set_title(f'Difference {i}')
+    
+    plt.tight_layout()
+
+    # Display the loss history
+    plt.figure()
+    plt.plot(optimizer.losses)
+    plt.xlabel('Iteration')
+    plt.ylabel('Loss')
+    plt.title('Loss history')
+
+    plt.show()
