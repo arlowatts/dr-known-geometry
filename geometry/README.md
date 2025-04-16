@@ -47,3 +47,9 @@ The geometry of a letter-size page. Modeled in Blender 3.4.1.
 Type: Plane
 Width: 8.5in
 Height: 11in
+
+## Skull
+
+Desert's Kiss by ArsMoriendi3D.
+
+Source: [https://www.thingiverse.com/thing:4667413](https://www.thingiverse.com/thing:4667413)
