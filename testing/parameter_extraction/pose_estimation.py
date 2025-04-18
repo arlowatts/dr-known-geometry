@@ -75,6 +75,13 @@ class PoseEstimator:
 
         return self.opt_transforms
 
+    def save_poses(self):
+        pass
+
+    @staticmethod
+    def load_poses():
+        pass
+
 def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_shape: (int, int)) -> list[tuple[tuple['mi.ScalarTransform4f',float,tuple[float,float],float],tuple[tuple[float,float],tuple[float,float],float]]]:
     """Render silhouette templates of a given scene.
 
@@ -252,6 +259,14 @@ def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple
         opt_transforms.append(mi.ScalarTransform4f(dr.slice((transform.inverse() @ params[f'sensor{i}.to_world']).matrix, 0)))
 
     return opt_transforms
+
+def serialize_pose(pose: list[tuple['mi.ScalarTransform4f',float,tuple[float,float],float]]) -> str:
+    """Return a string representation of the sensor pose and parameters."""
+    pass
+
+def deserialize_pose(string: str) -> list[tuple['mi.ScalarTransform4f',float,tuple[float,float],float]]:
+    """Parse a string as a sensor pose and sensor parameters."""
+    pass
 
 def get_img_stats(img: np.ndarray) -> tuple[tuple[float,float],tuple[float,float],float]:
     """Compute the center of mass, orientation vector, and ratio of lit pixels in an image."""
