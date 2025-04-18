@@ -78,14 +78,14 @@ class PoseEstimator:
     def save_transforms(self, path: str):
 
         # check that the transforms have been optimized
-        assert self.opt_transforms != None, 'Sensor transforms have not been optimized'
+        assert self.opt_transforms != None, 'sensor transforms have not been optimized'
 
         # open the file for writing
         with open(path, 'w') as file:
 
             # write each pose in a line of the file
             for transform in self.opt_transforms:
-                file.write(serialize_transform(transform))
+                file.write(serialize_transform(transform) + '\n')
 
     @staticmethod
     def load_transforms(path: str) -> list['mi.ScalarTransform4f']:
@@ -283,8 +283,8 @@ def serialize_transform(transform: 'mi.ScalarTransform4f') -> str:
     """Return a string representation of the transform."""
 
     # extract the matrices from the transform
-    matrix = transform.matrix
-    inverse_transpose = transform.inverse_transpose
+    mat = transform.matrix
+    inv = transform.inverse_transpose
 
     # copy the matrix values into a list
     values = [*mat.numpy().reshape(16), *inv.numpy().reshape(16)]
