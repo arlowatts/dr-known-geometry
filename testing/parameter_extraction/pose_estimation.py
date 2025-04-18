@@ -263,37 +263,44 @@ def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple
 def serialize_pose(sensor_params: tuple['mi.ScalarTransform4f',float,tuple[float,float],float]) -> str:
     """Return a string representation of the sensor pose and parameters."""
 
-    values = []
-
+    # reference the sensor parameters
     to_world = sensor_params[0]
     fov = sensor_params[1]
     ppo = sensor_params[2]
     distance = sensor_params[3]
 
+    # extract the matrices from the transform
     matrix = to_world.matrix
     inverse_transpose = to_world.inverse_transpose
 
+    # copy the matrix values and other parameters into a list
+    values = []
     values.extend(matrix.numpy().reshape(16))
     values.extend(inverse_transpose.numpy().reshape(16))
     values.append(fov)
     values.extend(ppo)
     values.append(distance)
 
+    # join the list into a string
     return ' '.join(str(x) for x in values)
 
 def deserialize_pose(string: str) -> tuple['mi.ScalarTransform4f',float,tuple[float,float],float]:
     """Parse a string as a sensor pose and sensor parameters."""
 
+    # parse the string as a list
     values = [float(x) for x in string.split(' ')]
 
+    # reconstruct the matrices for the transform
     matrix = np.array(values[0:16]).reshape(4, 4)
     inverse_transpose = np.array(values[16:32]).reshape(4, 4)
 
+    # initialize the sensor parameters
     to_world = mi.ScalarTransform4f(matrix, inverse_transpose)
     fov = values[32]
     ppo = (values[33], values[34])
     distance = values[35]
 
+    # return the resulting tuple
     return (to_world, fov, ppo, distance)
 
 def get_img_stats(img: np.ndarray) -> tuple[tuple[float,float],tuple[float,float],float]:
