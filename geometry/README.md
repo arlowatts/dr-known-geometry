@@ -26,14 +26,6 @@ Type: UV sphere
 Segments: 128
 Rings: 64
 
-## Torus
-
-A simple torus. Modeled in Blender 3.4.1
-
-Type: Torus
-Major Segments: 128
-Minor Segments: 64
-
 ## Cube
 
 A simple cube. Modeled in Blender 3.4.1
