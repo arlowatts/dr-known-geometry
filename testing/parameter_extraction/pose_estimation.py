@@ -57,7 +57,7 @@ class PoseEstimator:
         # restore the previous mitsuba variant
         mi.set_variant(variant)
 
-    def optimize(self):
+    def optimize(self) -> list['mi.ScalarTransform4f']:
 
         # store the current mitsuba variant to restore it later
         variant = mi.variant()
@@ -75,12 +75,31 @@ class PoseEstimator:
 
         return self.opt_transforms
 
-    def save_poses(self):
-        pass
+    def save_transforms(self, path: str):
+
+        # check that the transforms have been optimized
+        assert self.opt_transforms != None, 'Sensor transforms have not been optimized'
+
+        # open the file for writing
+        with open(path, 'w') as file:
+
+            # write each pose in a line of the file
+            for transform in self.opt_transforms:
+                file.write(serialize_transform(transform))
 
     @staticmethod
-    def load_poses():
-        pass
+    def load_transforms(path: str) -> list['mi.ScalarTransform4f']:
+
+        opt_transforms = []
+
+        # open the file for reading
+        with open(path) as file:
+
+            # parse each line as a pose
+            for line in file:
+                opt_transforms.append(deserialize_transform(line))
+
+        return opt_transforms
 
 def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_shape: (int, int)) -> list[tuple[tuple['mi.ScalarTransform4f',float,tuple[float,float],float],tuple[tuple[float,float],tuple[float,float],float]]]:
     """Render silhouette templates of a given scene.
@@ -260,48 +279,31 @@ def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple
 
     return opt_transforms
 
-def serialize_pose(sensor_params: tuple['mi.ScalarTransform4f',float,tuple[float,float],float]) -> str:
-    """Return a string representation of the sensor pose and parameters."""
-
-    # reference the sensor parameters
-    to_world = sensor_params[0]
-    fov = sensor_params[1]
-    ppo = sensor_params[2]
-    distance = sensor_params[3]
+def serialize_transform(transform: 'mi.ScalarTransform4f') -> str:
+    """Return a string representation of the transform."""
 
     # extract the matrices from the transform
-    matrix = to_world.matrix
-    inverse_transpose = to_world.inverse_transpose
+    matrix = transform.matrix
+    inverse_transpose = transform.inverse_transpose
 
-    # copy the matrix values and other parameters into a list
-    values = []
-    values.extend(matrix.numpy().reshape(16))
-    values.extend(inverse_transpose.numpy().reshape(16))
-    values.append(fov)
-    values.extend(ppo)
-    values.append(distance)
+    # copy the matrix values into a list
+    values = [*mat.numpy().reshape(16), *inv.numpy().reshape(16)]
 
     # join the list into a string
     return ' '.join(str(x) for x in values)
 
-def deserialize_pose(string: str) -> tuple['mi.ScalarTransform4f',float,tuple[float,float],float]:
-    """Parse a string as a sensor pose and sensor parameters."""
+def deserialize_transform(string: str) -> 'mi.ScalarTransform4f':
+    """Parse a string as a transform."""
 
     # parse the string as a list
     values = [float(x) for x in string.split(' ')]
 
     # reconstruct the matrices for the transform
-    matrix = np.array(values[0:16]).reshape(4, 4)
-    inverse_transpose = np.array(values[16:32]).reshape(4, 4)
+    mat = np.array(values[0:16]).reshape(4, 4)
+    inv = np.array(values[16:32]).reshape(4, 4)
 
-    # initialize the sensor parameters
-    to_world = mi.ScalarTransform4f(matrix, inverse_transpose)
-    fov = values[32]
-    ppo = (values[33], values[34])
-    distance = values[35]
-
-    # return the resulting tuple
-    return (to_world, fov, ppo, distance)
+    # return the resulting transform
+    return mi.ScalarTransform4f(mat, inv)
 
 def get_img_stats(img: np.ndarray) -> tuple[tuple[float,float],tuple[float,float],float]:
     """Compute the center of mass, orientation vector, and ratio of lit pixels in an image."""
