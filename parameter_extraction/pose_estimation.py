@@ -29,6 +29,7 @@ class PoseEstimator:
         # save arguments as properties
         self.model_path = model_path
         self.model_type = model_type
+        self.name = model_path.split('/')[-1].split('.')[0]
         self.ref_dir = ref_dir
         self.ref_shape = ref_shape
         self.tmplt_count = tmplt_count
@@ -37,6 +38,16 @@ class PoseEstimator:
         self.refs = None
         self.poses = None
         self.opt_transforms = None
+
+        # define the path for saving/loading transforms
+        transforms_path = f"../output/{self.name}/transforms"
+
+        # check if transforms file already exists and load them
+        if os.path.isfile(transforms_path):
+            print(f"Loading existing transforms from: {transforms_path}")
+            self.opt_transforms = PoseEstimator.load_transforms(transforms_path)
+            # skip template rendering and matching if transforms are loaded
+            return
 
         # store the current mitsuba variant to restore it later
         variant = mi.variant()
@@ -59,6 +70,16 @@ class PoseEstimator:
 
     def optimize(self) -> list['mi.ScalarTransform4f']:
 
+        # if transforms were already loaded, skip optimization
+        if self.opt_transforms is not None:
+            return self.opt_transforms
+
+        # define the path for saving/loading transforms
+        transforms_path = f"../output/{self.name}/transforms"
+        transforms_dir = os.path.dirname(transforms_path)
+
+        # otherwise, optimize the poses
+        print(f"Optimizing transforms, will save to: {transforms_path}")
         # store the current mitsuba variant to restore it later
         variant = mi.variant()
         mi.set_variant('cuda_ad_mono')
@@ -72,6 +93,13 @@ class PoseEstimator:
 
         # restore the previous mitsuba variant
         mi.set_variant(variant)
+
+        # ensure the output directory exists
+        os.makedirs(transforms_dir, exist_ok=True)
+
+        # save the optimized transforms
+        self.save_transforms(transforms_path)
+        print(f"Saved optimized transforms to: {transforms_path}")
 
         return self.opt_transforms
 
