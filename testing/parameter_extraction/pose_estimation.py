@@ -260,11 +260,28 @@ def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple
 
     return opt_transforms
 
-def serialize_pose(pose: list[tuple['mi.ScalarTransform4f',float,tuple[float,float],float]]) -> str:
+def serialize_pose(sensor_params: tuple['mi.ScalarTransform4f',float,tuple[float,float],float]) -> str:
     """Return a string representation of the sensor pose and parameters."""
-    pass
 
-def deserialize_pose(string: str) -> list[tuple['mi.ScalarTransform4f',float,tuple[float,float],float]]:
+    values = []
+
+    to_world = sensor_params[0]
+    fov = sensor_params[1]
+    ppo = sensor_params[2]
+    distance = sensor_params[3]
+
+    matrix = to_world.matrix
+    inverse_transpose = to_world.inverse_transpose
+
+    values.extend(matrix.numpy().reshape(16))
+    values.extend(matrix.numpy().reshape(16))
+    values.append(fov)
+    values.extend(ppo)
+    values.append(distance)
+
+    return ' '.join(str(x) for x in values)
+
+def deserialize_pose(string: str) -> tuple['mi.ScalarTransform4f',float,tuple[float,float],float]:
     """Parse a string as a sensor pose and sensor parameters."""
     pass
 
