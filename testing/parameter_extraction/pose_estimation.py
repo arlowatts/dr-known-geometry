@@ -274,7 +274,7 @@ def serialize_pose(sensor_params: tuple['mi.ScalarTransform4f',float,tuple[float
     inverse_transpose = to_world.inverse_transpose
 
     values.extend(matrix.numpy().reshape(16))
-    values.extend(matrix.numpy().reshape(16))
+    values.extend(inverse_transpose.numpy().reshape(16))
     values.append(fov)
     values.extend(ppo)
     values.append(distance)
@@ -283,7 +283,18 @@ def serialize_pose(sensor_params: tuple['mi.ScalarTransform4f',float,tuple[float
 
 def deserialize_pose(string: str) -> tuple['mi.ScalarTransform4f',float,tuple[float,float],float]:
     """Parse a string as a sensor pose and sensor parameters."""
-    pass
+
+    values = [float(x) for x in string.split(' ')]
+
+    matrix = np.array(values[0:16]).reshape(4, 4)
+    inverse_transpose = np.array(values[16:32]).reshape(4, 4)
+
+    to_world = mi.ScalarTransform4f(matrix, inverse_transpose)
+    fov = values[32]
+    ppo = (values[33], values[34])
+    distance = values[35]
+
+    return (to_world, fov, ppo, distance)
 
 def get_img_stats(img: np.ndarray) -> tuple[tuple[float,float],tuple[float,float],float]:
     """Compute the center of mass, orientation vector, and ratio of lit pixels in an image."""
