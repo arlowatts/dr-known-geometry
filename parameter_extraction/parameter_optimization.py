@@ -12,6 +12,7 @@ import sys
 import argparse
 
 from pose_estimation import PoseEstimator
+from gamma_correction import apply_gamma_correction
 
 DEFAULT_PARAMETER_OPTIMIZATION_SETTINGS = {
     'resolution': (128, 128),
@@ -20,59 +21,53 @@ DEFAULT_PARAMETER_OPTIMIZATION_SETTINGS = {
     'spp': 64,
     'camera_distance': 2.0,
     'scale_factor': 5.0,
-    'integrator_max_depth': 2,
+    'integrator_max_depth': 20,
     'optimization_stages': {
         '1': {
             'parameters': [
-                'object.bsdf.base_color.value',
+                'envmap.data',
+                'envmap.scale',
             ],
-            'percent': 0.1
+            'mask_type': 'environment',
+            'percent': 0.3
         },
         '2': {
             'parameters': [
-                'envmap.data',
-                'envmap.scale',
                 'object.bsdf.base_color.value',
                 'object.bsdf.roughness.value',
                 'object.bsdf.metallic.value',
-
             ],
-            'percent': 0.4
+            'mask_type': 'none',
+            'percent': 0.6
         },
         '3': {
             'parameters': [
-                # 'envmap.data',
-                # 'envmap.scale',
                 'object.bsdf.base_color.value',
                 'object.bsdf.roughness.value',
                 'object.bsdf.metallic.value',
                 'object.bsdf.spec_tint.value',
                 'object.bsdf.specular',
                 'object.bsdf.anisotropic.value',
-                # 'object.bsdf.sheen.value',
-                # 'object.bsdf.sheen_tint.value',
-                # 'object.bsdf.clearcoat.value',
-                # 'object.bsdf.clearcoat_gloss.value'
             ],
-            'percent': 0.75
+            'mask_type': 'none',
+            'percent': 0.7
         },
         '4': {
             'parameters': [
-                'envmap.data',
-                'envmap.scale',
                 'object.bsdf.base_color.value',
                 'object.bsdf.roughness.value',
                 'object.bsdf.metallic.value',
                 'object.bsdf.spec_tint.value',
                 'object.bsdf.specular',
                 'object.bsdf.anisotropic.value',
-                # 'object.bsdf.sheen.value',
-                # 'object.bsdf.sheen_tint.value',
-                # 'object.bsdf.clearcoat.value',
-                # 'object.bsdf.clearcoat_gloss.value'
+                'object.bsdf.sheen.value',
+                'object.bsdf.sheen_tint.value',
+                'object.bsdf.clearcoat.value',
+                'object.bsdf.clearcoat_gloss.value'
             ],
+            'mask_type': 'object',
             'percent': 1.0
-        }
+        },
     },
     'initial_bsdf': {
         'type': 'principled',
@@ -80,8 +75,8 @@ DEFAULT_PARAMETER_OPTIMIZATION_SETTINGS = {
             'type': 'rgb',
             'value': [0.5, 0.5, 0.5]
         },
-        'roughness': 0.75,
-        'metallic': 1.0,
+        'roughness': 0.5,
+        'metallic': 0.5,
         'spec_tint': 0.5,
         'specular': 0.5,
         'anisotropic': 0.5,
@@ -180,15 +175,25 @@ class ParameterOptimizer():
         pbar = tqdm.tqdm(total=num_iterations, desc="Parameter optimization")
 
         for i in range(num_iterations):
-            stage = self.get_stage(i, num_iterations)
+            stage_key = self.get_stage(i, num_iterations)
+            stage_info = self.optimization_stages[stage_key]
+            stage_params_to_optimize = stage_info['parameters']
+            stage_mask_type = stage_info['mask_type']
 
             params = mi.traverse(self.scene)
-            params.keep(self.optimization_stages[stage]['parameters'])
+            params.keep(stage_params_to_optimize)
 
             lr = self.settings['parameter_optimization']['learning_rate']
             opt = mi.ad.Adam(lr=lr)
             for key in params.keys():
-                opt[key] = dr.clip(params[key], 0.0, 1.0) if 'object.bsdf' in key else params[key]
+                # Clip BSDF parameters between 0 and 1
+                if 'object.bsdf' in key and 'base_color' not in key: # Don't clip base color like this
+                    opt[key] = dr.clip(params[key], 0.0, 1.0)
+                elif 'object.bsdf.base_color' in key:
+                     opt[key] = dr.clip(params[key], 0.0, 1.0) # Clip color components
+                else:
+                    opt[key] = params[key] # Keep envmap params as they are (or add specific constraints if needed)
+
 
             params.update(opt)
 
@@ -205,32 +210,59 @@ class ParameterOptimizer():
             target_img = mi.TensorXf(self.target_images[random_idx])
 
             # get mask for the current image
-            mask_img = mi.TensorXf(self.masks[random_idx])
-            
+            mask_tensor = mi.TensorXf(self.masks[random_idx])
+
+            # Apply mask based on the current optimization stage
+            if stage_mask_type == 'object':
+                # Mask out the environment, focus on the object
+                loss_mask = mask_tensor
+            elif stage_mask_type == 'environment':
+                # Mask out the object, focus on the environment
+                loss_mask = 1.0 - mask_tensor
+            elif stage_mask_type == 'none':
+                # No masking, consider the whole image
+                loss_mask = mi.TensorXf(np.ones_like(mask_tensor.numpy()))
+            else:
+                # Default to object mask if type is unknown (or handle error)
+                print(f"Warning: Unknown mask type '{stage_mask_type}'. Defaulting to 'object'.")
+                loss_mask = mask_tensor
+
             # apply mask to both rendered and target images before computing loss
-            masked_image = image * mask_img
-            masked_target = target_img * mask_img
-            
+            masked_image = image * loss_mask
+            masked_target = target_img * loss_mask
+
             # Compute loss
             loss = dr.mean(dr.square(masked_image - masked_target))
             self.losses.append(loss.array[0])
             dr.backward(loss)
             opt.step()
 
+            # Update scene parameters after optimizer step
             params.update(opt)
-            
+
+            # Re-apply constraints after step (important for clipping)
+            for key in params.keys():
+                 if 'object.bsdf' in key and 'base_color' not in key:
+                     params[key] = dr.clip(params[key], 0.0, 1.0)
+                 elif 'object.bsdf.base_color' in key:
+                     params[key] = dr.clip(params[key], 0.0, 1.0)
+                 # Add constraints for envmap if needed, e.g., positivity for scale
+
             # update progress bar
-            pbar.set_description(f"Optimizing BSDF (loss: {loss.array[0]:.6f})")
+            pbar.set_description(f"Optimizing Stage {stage_key} (loss: {loss.array[0]:.6f})")
             pbar.update(1)
 
-            # Store the current values of the parameters
+            # Store the current values of the parameters being optimized in this stage
             if i == num_iterations - 1:
-                for key in params.keys():
-                    self.optimized_parameters[key] = params[key]
+                # At the very end, store all parameters from the final stage
+                final_params = mi.traverse(self.scene)
+                for key in self.optimization_stages[list(self.optimization_stages.keys())[-1]]['parameters']:
+                     self.optimized_parameters[key] = final_params[key]
         
-        # Save environment map at the end
-        if 'envmap.data' in params:
-            env_map = mi.Bitmap(params['envmap.data'])
+        # Save environment map at the end if it was optimized
+        final_params = mi.traverse(self.scene) # Get final state
+        if 'envmap.data' in final_params:
+            env_map = mi.Bitmap(final_params['envmap.data'])
             env_map_path = f'{env_map_dir}/optimized_env_map.exr'
             mi.util.write_bitmap(env_map_path, env_map, write_async=True)
 
@@ -268,7 +300,7 @@ class ParameterOptimizer():
     def create_scene(self, model, camera_transforms):
         '''Create a Mitsuba scene with the given model filepath and resolution'''
 
-        envmap_np = np.ones((64, 128, 1), dtype=np.float32) * 1
+        envmap_np = np.ones((128, 256, 3), dtype=np.float32)
 
         scene = {
             'type': 'scene',
@@ -322,10 +354,11 @@ class ParameterOptimizer():
         return estimator.optimize()
 
     def get_stage(self, iteration, num_iterations):
-        for stage, data in self.optimization_stages.items():
+        sorted_stages = sorted(self.optimization_stages.items(), key=lambda item: item[1]['percent'])
+        for stage_key, data in sorted_stages:
             if iteration < num_iterations * data['percent']:
-                return stage
-        return list(self.optimization_stages.keys())[-1]
+                return stage_key
+        return sorted_stages[-1][0]
 
 
 if __name__ == '__main__':
@@ -401,60 +434,167 @@ if __name__ == '__main__':
     for key, value in optimized_params.items():
         print(f"{key}: {value}")
 
+    # Reload original target images for final comparison at high resolution
+    original_target_image_paths = sorted(glob.glob(f'{image_dir}/*.png'))[::nth]
+
     # render final images with optimized parameters
     final_images = []
+    final_resolution = (512, 512)
+    integrator = mi.load_dict({
+        'type': 'path',
+        'max_depth': 3
+    })
     for sensor_idx in range(len(optimizer.sensors)):
-        # vreate a copy of the scene with optimized parameters
+        # create a copy of the scene with optimized parameters
         params = mi.traverse(optimizer.scene)
         for key, value in optimizer.optimized_parameters.items():
             params[key] = value
         
-        # render the image
-        rendered_image = mi.render(optimizer.scene, sensor=optimizer.sensors[sensor_idx], 
-                                   params=params, spp=256)
+        # Create a new sensor with the higher resolution for the final render
+        camera_transform = optimizer.camera_positions[sensor_idx]
+        final_sensor = optimizer.load_sensor(camera_transform, final_resolution)
+
+        # render the image with the new high-resolution sensor
+        rendered_image = mi.render(optimizer.scene, sensor=final_sensor, 
+                                   params=params, spp=256, integrator=integrator)
         final_images.append(mi.Bitmap(rendered_image))
 
-    # load masks
+    new_env_images = []
+    for i in range(2):
+        env_maps = []
+        env_maps.append(r'/env/quarry_cloudy_4k.exr')
+        env_maps.append(r'/env/rogland_clear_night_4k.exr')
+
+        optimized_bsdf = {}
+        for key, value in optimizer.optimized_parameters.items():
+            if 'object.bsdf' in key:
+                parts = key.split('.')
+                if len(parts) == 4 and parts[2] == 'base_color' and parts[3] == 'value':
+                     if 'base_color' not in optimized_bsdf:
+                         optimized_bsdf['base_color'] = {'type': 'rgb'}
+                     optimized_bsdf['base_color']['value'] = [v.array[0] for v in value.array] if hasattr(value, 'array') else value
+                elif len(parts) == 4 and parts[3] == 'value':
+                     param_name = parts[2]
+                     optimized_bsdf[param_name] = value.array[0] if hasattr(value, 'array') else value
+                elif len(parts) == 3:
+                    param_name = parts[2]
+                    optimized_bsdf[param_name] = value.array[0] if hasattr(value, 'array') else value
+
+        optimized_bsdf['type'] = optimizer.settings['parameter_optimization']['initial_bsdf']['type'] # Assuming principled
+
+        envmap_path = env_maps[i]
+
+        new_scene_dict = {
+            'type': 'scene',
+            'integrator': {
+                'type': 'path',
+                'max_depth': 3
+            },
+            'envmap': {
+                'type': 'envmap',
+                'filename': envmap_path,
+                'scale': 1.0,
+                'to_world': mi.ScalarTransform4f().rotate(axis=[0, 0, 1], angle=90)
+            },
+            'object': {
+                'type': optimizer.settings['pose_estimation']['model_type'],
+                'filename': optimizer.model_path,
+                'to_world': mi.ScalarTransform4f().scale(optimizer.settings['parameter_optimization']['scale_factor']),
+                'bsdf': optimized_bsdf
+            }
+        }
+
+        # Load the new scene
+        new_scene = mi.load_dict(new_scene_dict)
+
+        camera_transform = optimizer.camera_positions[0]
+        final_sensor = optimizer.load_sensor(camera_transform, final_resolution)
+
+        rendered_image = mi.render(new_scene, sensor=final_sensor, spp=256, integrator=integrator)
+        new_env_images.append(mi.Bitmap(rendered_image))
+
+    # load masks and resample them to the final resolution
     masks = []
-    for i in range(len(optimizer.target_images)):
-        mask_path = f'{optimizer.settings["pose_estimation"]["ref_dir"]}/img{i:02d}.png'
-        mask = mi.Bitmap(mask_path).convert(pixel_format=mi.Bitmap.PixelFormat.RGB,
-                                            component_format=mi.Struct.Type.Float32).resample(
-                                            optimizer.settings['parameter_optimization']['resolution'], 
-                                            optimizer.rfilter)
-        masks.append(mask)
+    mask_paths = sorted(glob.glob(f'{mask_dir}/img*.png'))[::nth]
+    for i in range(len(original_target_image_paths)):
+        mask_path = mask_paths[i]
+        try:
+            mask = mi.Bitmap(mask_path).convert(pixel_format=mi.Bitmap.PixelFormat.RGB,
+                                                component_format=mi.Struct.Type.Float32).resample(
+                                                final_resolution,
+                                                optimizer.rfilter)
+            masks.append(mask)
+        except Exception as e:
+            print(f"Warning: Could not load or resample mask {mask_path} for final comparison. Error: {e}")
+            mask = mi.Bitmap(np.ones((final_resolution[1], final_resolution[0], 3), dtype=np.float32))
+            masks.append(mask)
+
 
     # display the img grid
-    fig, axs = plt.subplots(len(optimizer.target_images), 3, figsize=(25, 4*len(optimizer.target_images)))
+    num_images_to_display = len(original_target_image_paths)
+    fig, axs = plt.subplots(num_images_to_display, 3, figsize=(25, 4*num_images_to_display))
 
+    # Create final output directories
     final_output_dir = f'../output/{name}/final'
-    os.makedirs(final_output_dir, exist_ok=True)
+    ref_output_dir = os.path.join(final_output_dir, 'reference')
+    rendered_output_dir = os.path.join(final_output_dir, 'rendered')
+    diff_output_dir = os.path.join(final_output_dir, 'difference')
+    masked_ref_output_dir = os.path.join(final_output_dir, 'masked_reference')
+    masked_rendered_output_dir = os.path.join(final_output_dir, 'masked_rendered')
+    additional_renders_dir = os.path.join(final_output_dir, 'additional_renders')
+    os.makedirs(ref_output_dir, exist_ok=True)
+    os.makedirs(rendered_output_dir, exist_ok=True)
+    os.makedirs(diff_output_dir, exist_ok=True)
+    os.makedirs(masked_ref_output_dir, exist_ok=True)
+    os.makedirs(masked_rendered_output_dir, exist_ok=True)
+    os.makedirs(additional_renders_dir, exist_ok=True)
+
+    # Save additional environment images
+    for i, env_image in enumerate(new_env_images):
+        env_image_path = os.path.join(additional_renders_dir, f'env_image_{i}.png')
+        mi.util.write_bitmap(env_image_path, env_image)
     
-    for i in range(len(optimizer.target_images)):
-        # if there is only one image, there isnt a list so we may run into indexing issues
-        if len(optimizer.target_images) == 1:
+    for i in range(num_images_to_display):
+        if num_images_to_display == 1:
             row = axs
         else:
             row = axs[i]
         
-        # create masked versions of reference and rendered images
-        ref_np = np.array(optimizer.target_images[i])
+        # resample original target images
+        original_target_image = mi.Bitmap(original_target_image_paths[i])
+        target_image_final_res = original_target_image.convert(
+                                        pixel_format=mi.Bitmap.PixelFormat.RGB,
+                                        component_format=mi.Struct.Type.Float32).resample(
+                                        final_resolution, optimizer.rfilter)
+        
+        ref_np = np.array(target_image_final_res)
         rendered_np = np.array(final_images[i])
+        mask_np = np.array(masks[i])
 
-        gamma = 1
-        rendered_np = np.clip(rendered_np, 0, 1) ** (1 / gamma)
+        # apply mask
+        ref_masked = ref_np * mask_np
+        rendered_masked = rendered_np * mask_np
+
+        rendered_display = rendered_np
+        ref_display = ref_np
+
         # calculate difference between masked images
-        diff = np.abs(ref_np - rendered_np)
-        # normalize difference
-        if np.max(diff) > 0:
-            diff = diff / np.max(diff)
-            
+        diff = np.abs(ref_masked - rendered_masked)
+        active_pixels = mask_np > 0
+        if np.any(active_pixels):
+             max_diff = np.max(diff[active_pixels])
+             if max_diff > 0:
+                 diff[active_pixels] = (diff[active_pixels] / max_diff) * mask_np[active_pixels] 
+        
+        # Set difference to black outside the mask
+        diff[~active_pixels] = 0
 
-        row[0].imshow(ref_np)
+
+        row[0].imshow(ref_display)
         row[0].axis('off')
         row[0].set_title(f'Reference {i}')
 
-        row[1].imshow(rendered_np)
+        row[1].imshow(rendered_display)
         row[1].axis('off')
         row[1].set_title(f'Rendered {i}')
 
@@ -462,17 +602,34 @@ if __name__ == '__main__':
         row[2].axis('off')
         row[2].set_title(f'Difference {i}')
 
-        ref_save_path = os.path.join(final_output_dir, f'reference_{i:02d}.png')
-        mi.util.write_bitmap(ref_save_path, optimizer.target_images[i])
+        # saving
+        ref_save_path = os.path.join(ref_output_dir, f'reference_{i:02d}.png')
+        mi.util.write_bitmap(ref_save_path, original_target_image)
 
-        rendered_save_path = os.path.join(final_output_dir, f'rendered_{i:02d}.png')
+        rendered_save_path = os.path.join(rendered_output_dir, f'rendered_{i:02d}.png')
         mi.util.write_bitmap(rendered_save_path, final_images[i])
 
-        diff_save_path = os.path.join(final_output_dir, f'difference_{i:02d}.png')
-        diff_img = (diff * 255).astype(np.uint8)
-        plt.imsave(diff_save_path, diff_img)
+        diff_save_path = os.path.join(diff_output_dir, f'difference_{i:02d}.png')
+
+        diff_img_float = np.clip(diff, 0, 1)
+        diff_img_uint8 = (diff_img_float * 255).astype(np.uint8)
+        plt.imsave(diff_save_path, diff_img_uint8, cmap='hot')
+
+        masked_ref_bitmap = mi.Bitmap(ref_masked)
+        masked_ref_save_path = os.path.join(masked_ref_output_dir, f'masked_reference_{i:02d}.png')
+        mi.util.write_bitmap(masked_ref_save_path, masked_ref_bitmap)
+
+        masked_rendered_bitmap = mi.Bitmap(rendered_masked)
+        masked_rendered_save_path = os.path.join(masked_rendered_output_dir, f'masked_rendered_{i:02d}.png')
+        mi.util.write_bitmap(masked_rendered_save_path, masked_rendered_bitmap)
     
     plt.tight_layout()
+
+    # Apply gamma correction to the rendered images
+    apply_gamma_correction(rendered_output_dir, gamma=0.454545)
+    apply_gamma_correction(masked_rendered_output_dir, gamma=0.454545)
+    apply_gamma_correction(masked_ref_output_dir, gamma=0.454545)
+    apply_gamma_correction(additional_renders_dir, gamma=0.454545)
 
     # Display the loss history
     plt.figure()

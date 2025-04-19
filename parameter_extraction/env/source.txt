@@ -1,0 +1,3 @@
+cloudy: https://polyhaven.com/a/quarry_cloudy
+
+night: https://polyhaven.com/a/rogland_clear_night
