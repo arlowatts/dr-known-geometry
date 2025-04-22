@@ -32,14 +32,18 @@ Before you run the code, make sure the following directories and files exist at 
 ```
 dr-known-geometry/
 |-- images
-|   |-- color
-|   |   \-- (color images go here)
-|   \-- masks
-|       \-- (silhouette masks go here)
+|   \-- <model_name>
+|       |-- color
+|       |   \-- (color images go here)
+|       \-- masks
+|           \-- (silhouette masks go here)
 |-- model
 |   \-- (3D model goes here)
 |-- output
-|   \-- (empty for now)
+|   \-- <model_name>
+|       |-- env_map
+|       |-- final
+|       \-- progress
 \-- src
     |-- env
     |   \-- (environment maps go here)
@@ -50,4 +54,4 @@ dr-known-geometry/
 
 The images and binary masks should also be consistently named. See the sample images linked above for the formatting.
 
-Now you can navigate to `src` and run `python3 parameter_optimization.py model_name`, where `model_name` is the name of your 3D model without the file extension. If you used the right directory structure, the program will automatically find the files it needs. Additional program output will be created in the `output` directory.
+Now you can navigate to `src` and run `python3 parameter_optimization.py <model_name>`, where `<model_name>` is the name of your 3D model without the file extension. If you used the right directory structure, the program will automatically find the files it needs. Additional program output will be created in the `output` directory.

@@ -8,28 +8,28 @@ import time
 import tqdm
 import glob
 import os
-import sys
 import argparse
 
 from pose_estimation import PoseEstimator
 from gamma_correction import apply_gamma_correction
 
+# default settings, overwritten in the main function
 DEFAULT_PARAMETER_OPTIMIZATION_SETTINGS = {
-    'resolution': (128, 128),
-    'num_iterations': 200,
-    'learning_rate': 0.01,
-    'spp': 64,
-    'camera_distance': 2.0,
-    'scale_factor': 5.0,
-    'integrator_max_depth': 20,
-    'optimization_stages': {
+    'resolution': (128, 128), # iteration res
+    'num_iterations': 200, # number of iterations
+    'learning_rate': 0.01, # optimizer learning rate
+    'spp': 64, # samples per pixel for rendering
+    'camera_distance': 2.0, # distance of the camera from the object
+    'scale_factor': 5.0, # scaling factor for the object
+    'integrator_max_depth': 2, # max depth for the path integrator (num bounces)
+    'optimization_stages': { # optimization stages
         '1': {
-            'parameters': [
+            'parameters': [ # the list of parameters to optimize in this stage
                 'envmap.data',
                 'envmap.scale',
             ],
-            'mask_type': 'environment',
-            'percent': 0.3
+            'mask_type': 'environment', # the masking method used for this stage
+            'percent': 0.3 # cumulative percent of iterations for this stage
         },
         '2': {
             'parameters': [
@@ -97,6 +97,7 @@ DEFAULT_POSE_ESTIMATION_SETTINGS = {
     'opt_iters': 100,           # number of optimization iterations to optimize each reference mask
 }
 
+# parameter optimization class
 class ParameterOptimizer():
     def __init__(self, target_images, model_path, settings=None):
 
@@ -113,7 +114,7 @@ class ParameterOptimizer():
             if 'pose_estimation' in settings:
                 self.settings['pose_estimation'].update(settings['pose_estimation'])
 
-        # convert the pixel format and component format, and resample the target images with a box filter
+        # convert the pixel format and component format, and resample the target images
         self.rfilter = mi.scalar_rgb.load_dict({'type': 'box'})
         resolution = self.settings['parameter_optimization']['resolution']
         self.target_images = [target_images[i].convert(pixel_format=mi.Bitmap.PixelFormat.RGB,
@@ -121,7 +122,7 @@ class ParameterOptimizer():
                                                       [resolution[0], resolution[1]], self.rfilter)
                               for i in range(len(target_images))]
 
-        # Load masks for optimization
+        # load masks for optimization
         self.masks = []
         for i in range(len(target_images)):
             mask_path = f'{self.settings["pose_estimation"]["ref_dir"]}/img{i:02d}.png'
@@ -151,6 +152,7 @@ class ParameterOptimizer():
         self.progress_images = []
         self.losses = []
 
+    # main method to run the optimization
     def run(self, num_iterations=None):
         if num_iterations is None:
             num_iterations = self.settings['parameter_optimization']['num_iterations']
@@ -174,6 +176,7 @@ class ParameterOptimizer():
         # progress bar
         pbar = tqdm.tqdm(total=num_iterations, desc="Parameter optimization")
 
+        # optimization loop
         for i in range(num_iterations):
             stage_key = self.get_stage(i, num_iterations)
             stage_info = self.optimization_stages[stage_key]
@@ -185,14 +188,14 @@ class ParameterOptimizer():
 
             lr = self.settings['parameter_optimization']['learning_rate']
             opt = mi.ad.Adam(lr=lr)
+            # clip the parameters to the range [0, 1]
             for key in params.keys():
-                # Clip BSDF parameters between 0 and 1
-                if 'object.bsdf' in key and 'base_color' not in key: # Don't clip base color like this
+                if 'object.bsdf' in key and 'base_color' not in key:
                     opt[key] = dr.clip(params[key], 0.0, 1.0)
                 elif 'object.bsdf.base_color' in key:
-                     opt[key] = dr.clip(params[key], 0.0, 1.0) # Clip color components
+                     opt[key] = dr.clip(params[key], 0.0, 1.0)
                 else:
-                    opt[key] = params[key] # Keep envmap params as they are (or add specific constraints if needed)
+                    opt[key] = params[key]
 
 
             params.update(opt)
@@ -202,7 +205,7 @@ class ParameterOptimizer():
             progress_path = f'{progress_dir}/{i:04d}.png'
             mi.util.write_bitmap(progress_path, mi.Bitmap(first_camera_image), write_async=True)
 
-            # Now do the actual optimization with random camera (as before)
+            # Now do the actual optimization with random camera
             random_idx = random.randint(0, len(self.camera_positions) - 1)
             image = self.render(self.scene, self.sensors[random_idx], params)
             self.progress_images.append(mi.util.convert_to_bitmap(image))
@@ -219,13 +222,9 @@ class ParameterOptimizer():
             elif stage_mask_type == 'environment':
                 # Mask out the object, focus on the environment
                 loss_mask = 1.0 - mask_tensor
-            elif stage_mask_type == 'none':
+            else:
                 # No masking, consider the whole image
                 loss_mask = mi.TensorXf(np.ones_like(mask_tensor.numpy()))
-            else:
-                # Default to object mask if type is unknown (or handle error)
-                print(f"Warning: Unknown mask type '{stage_mask_type}'. Defaulting to 'object'.")
-                loss_mask = mask_tensor
 
             # apply mask to both rendered and target images before computing loss
             masked_image = image * loss_mask
@@ -240,13 +239,12 @@ class ParameterOptimizer():
             # Update scene parameters after optimizer step
             params.update(opt)
 
-            # Re-apply constraints after step (important for clipping)
+            # Re-apply constraints
             for key in params.keys():
                  if 'object.bsdf' in key and 'base_color' not in key:
                      params[key] = dr.clip(params[key], 0.0, 1.0)
                  elif 'object.bsdf.base_color' in key:
                      params[key] = dr.clip(params[key], 0.0, 1.0)
-                 # Add constraints for envmap if needed, e.g., positivity for scale
 
             # update progress bar
             pbar.set_description(f"Optimizing Stage {stage_key} (loss: {loss.array[0]:.6f})")
@@ -260,7 +258,7 @@ class ParameterOptimizer():
                      self.optimized_parameters[key] = final_params[key]
         
         # Save environment map at the end if it was optimized
-        final_params = mi.traverse(self.scene) # Get final state
+        final_params = mi.traverse(self.scene)
         if 'envmap.data' in final_params:
             env_map = mi.Bitmap(final_params['envmap.data'])
             env_map_path = f'{env_map_dir}/optimized_env_map.exr'
@@ -353,7 +351,9 @@ class ParameterOptimizer():
         # optimize the poses
         return estimator.optimize()
 
+
     def get_stage(self, iteration, num_iterations):
+        """Get the current optimization stage based on the iteration."""
         sorted_stages = sorted(self.optimization_stages.items(), key=lambda item: item[1]['percent'])
         for stage_key, data in sorted_stages:
             if iteration < num_iterations * data['percent']:
@@ -401,13 +401,13 @@ if __name__ == '__main__':
             'integrator_max_depth': 2
         },
         'pose_estimation': {
-            'model_path': model_path,   # file path of the 3D model (must be appropriately scaled and centered)
-            'model_type': model_type,   # file type of the 3D model ('obj' or 'ply')
-            'ref_dir': mask_dir, # directory containing the reference masks
-            'ref_shape': (128, 128),    # dimensions of reference masks after resampling
-            'tmplt_count': 728,         # number of initial templates to render
-            'tmplt_shape': (128, 128),  # dimensions of rendered templates
-            'opt_iters': 50,           # number of optimization iterations to optimize each reference mask
+            'model_path': model_path,
+            'model_type': model_type,
+            'ref_dir': mask_dir,
+            'ref_shape': (128, 128),
+            'tmplt_count': 728,
+            'tmplt_shape': (128, 128),
+            'opt_iters': 50,
             'nth': nth
         }
     }
@@ -459,60 +459,6 @@ if __name__ == '__main__':
                                    params=params, spp=256, integrator=integrator)
         final_images.append(mi.Bitmap(rendered_image))
 
-    new_env_images = []
-    for i in range(2):
-        env_maps = []
-        env_maps.append(r'/env/quarry_cloudy_4k.exr')
-        env_maps.append(r'/env/rogland_clear_night_4k.exr')
-
-        optimized_bsdf = {}
-        for key, value in optimizer.optimized_parameters.items():
-            if 'object.bsdf' in key:
-                parts = key.split('.')
-                if len(parts) == 4 and parts[2] == 'base_color' and parts[3] == 'value':
-                     if 'base_color' not in optimized_bsdf:
-                         optimized_bsdf['base_color'] = {'type': 'rgb'}
-                     optimized_bsdf['base_color']['value'] = [v.array[0] for v in value.array] if hasattr(value, 'array') else value
-                elif len(parts) == 4 and parts[3] == 'value':
-                     param_name = parts[2]
-                     optimized_bsdf[param_name] = value.array[0] if hasattr(value, 'array') else value
-                elif len(parts) == 3:
-                    param_name = parts[2]
-                    optimized_bsdf[param_name] = value.array[0] if hasattr(value, 'array') else value
-
-        optimized_bsdf['type'] = optimizer.settings['parameter_optimization']['initial_bsdf']['type'] # Assuming principled
-
-        envmap_path = env_maps[i]
-
-        new_scene_dict = {
-            'type': 'scene',
-            'integrator': {
-                'type': 'path',
-                'max_depth': 3
-            },
-            'envmap': {
-                'type': 'envmap',
-                'filename': envmap_path,
-                'scale': 1.0,
-                'to_world': mi.ScalarTransform4f().rotate(axis=[0, 0, 1], angle=90)
-            },
-            'object': {
-                'type': optimizer.settings['pose_estimation']['model_type'],
-                'filename': optimizer.model_path,
-                'to_world': mi.ScalarTransform4f().scale(optimizer.settings['parameter_optimization']['scale_factor']),
-                'bsdf': optimized_bsdf
-            }
-        }
-
-        # Load the new scene
-        new_scene = mi.load_dict(new_scene_dict)
-
-        camera_transform = optimizer.camera_positions[0]
-        final_sensor = optimizer.load_sensor(camera_transform, final_resolution)
-
-        rendered_image = mi.render(new_scene, sensor=final_sensor, spp=256, integrator=integrator)
-        new_env_images.append(mi.Bitmap(rendered_image))
-
     # load masks and resample them to the final resolution
     masks = []
     mask_paths = sorted(glob.glob(f'{mask_dir}/img*.png'))[::nth]
@@ -547,13 +493,7 @@ if __name__ == '__main__':
     os.makedirs(diff_output_dir, exist_ok=True)
     os.makedirs(masked_ref_output_dir, exist_ok=True)
     os.makedirs(masked_rendered_output_dir, exist_ok=True)
-    os.makedirs(additional_renders_dir, exist_ok=True)
 
-    # Save additional environment images
-    for i, env_image in enumerate(new_env_images):
-        env_image_path = os.path.join(additional_renders_dir, f'env_image_{i}.png')
-        mi.util.write_bitmap(env_image_path, env_image)
-    
     for i in range(num_images_to_display):
         if num_images_to_display == 1:
             row = axs
@@ -629,7 +569,6 @@ if __name__ == '__main__':
     apply_gamma_correction(rendered_output_dir, gamma=0.454545)
     apply_gamma_correction(masked_rendered_output_dir, gamma=0.454545)
     apply_gamma_correction(masked_ref_output_dir, gamma=0.454545)
-    apply_gamma_correction(additional_renders_dir, gamma=0.454545)
 
     # Display the loss history
     plt.figure()

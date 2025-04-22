@@ -4,6 +4,7 @@ import argparse
 import numpy as np
 from PIL import Image
 
+# was having difficulty with the gamma when using mitsuba's save to disk function, so this is a workaround
 def apply_gamma_correction(input_dir, gamma):
     """
     applies gamma correction to all imgs in a file

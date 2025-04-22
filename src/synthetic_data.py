@@ -193,6 +193,7 @@ def create_binary_mask_bitmap(rendered_image, threshold=0.95):
 
 
 if __name__ == "__main__":
+    # command line args
     parser = argparse.ArgumentParser(description='Generate synthetic training data (color images and masks)')
     parser.add_argument('model_name', type=str, help='Name of the model (e.g., "bunny")')
     parser.add_argument('--num_cameras', type=int, default=DEFAULT_NUM_CAMERAS, help='Number of camera views to render')
@@ -227,6 +228,7 @@ if __name__ == "__main__":
     print(f"Outputting color images to: {color_dir}")
     print(f"Outputting masks to: {mask_dir}")
 
+    # render the model from multiple camera angles, orbiting around the model
     camera_transforms = generate_camera_transforms(args.num_cameras, args.distance)
 
     print(f"Rendering {args.num_cameras} views...")
@@ -268,7 +270,7 @@ if __name__ == "__main__":
         color_output_path = os.path.join(color_dir, f'img{i:02d}.png')
         mi.util.write_bitmap(color_output_path, color_image)
 
-        # use a black BSDF for the object
+        # use a black BSDF for the object (mask)
         mask_bsdf = {'type': 'diffuse', 'reflectance': {'type': 'rgb', 'value': [0.0, 0.0, 0.0]}}
         mask_scene_dict = {
             'type': 'scene',
