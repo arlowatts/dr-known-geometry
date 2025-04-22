@@ -17,3 +17,12 @@ This project code also requires `matplotlib` to display the results and `tqdm` t
 ## Hardware Requirements
 
 This project uses CUDA to run code on the GPU, and requires a device that supports it.
+
+## Usage
+
+To try out our code for yourself, in addition to installing its dependencies, you will need:
+- a 3D model of an object (only `.obj` and `.ply` files are supported);
+- square photographs or rendered images of the object;
+- masks indicating the silhouette of the object in each image.
+
+There are some 3D models included in this repository, which you are free to use. You can also download a [set of images with masks](https://drive.google.com/file/d/1s4mMIkix8gP55CV0srwPjlSOOqJgoOEh/view?usp=sharing), showing the bunny model.
