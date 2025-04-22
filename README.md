@@ -26,3 +26,11 @@ To try out our code for yourself, in addition to installing its dependencies, yo
 - masks indicating the silhouette of the object in each image.
 
 There are some 3D models included in this repository, which you are free to use. You can also download a [set of images with masks](https://drive.google.com/file/d/1s4mMIkix8gP55CV0srwPjlSOOqJgoOEh/view?usp=sharing), showing the bunny model.
+
+The image reference folder should have the same name as the model for automatic detection. In addition, the reference images must follow the same file structure as the provided example above.
+
+To run the optimizer, navigate to the src folder, and type the following command:
+
+python parameter_optimization.py [name of model]
+
+e.x. python parameter_optimization.py bunny
