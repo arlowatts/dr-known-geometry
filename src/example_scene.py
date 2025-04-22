@@ -5,6 +5,8 @@ import drjit as dr
 import matplotlib.pyplot as plt
 from synthetic_data import render_single_image
 
+# this is specifically for the report figure that displays the different effect of different material parameters
+
 mi.set_variant('cuda_ad_rgb')
 
 output_dir = "../figures"
@@ -45,6 +47,7 @@ cols = len(parameters)
 fig, axs = plt.subplots(rows, cols, figsize=(cols * 1.5, rows * 1.5))
 fig.subplots_adjust(hspace=0.1, wspace=0.1)
 
+# render the images for each parameter
 for j, param_name in enumerate(parameters):
     print(f"{param_name}")
     base_color = color_map[param_name]
@@ -69,6 +72,7 @@ for j, param_name in enumerate(parameters):
             'sheen_tint': 0.0,
         }
 
+        # some additional default values for certain parameters
         if param_name == 'metallic':
             bsdf_params['roughness'] = 0.4
         elif param_name == 'spec_tint':
