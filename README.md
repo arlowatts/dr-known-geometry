@@ -26,3 +26,28 @@ To try out our code for yourself, in addition to installing its dependencies, yo
 - masks indicating the silhouette of the object in each image.
 
 There are some 3D models included in this repository, which you are free to use. You can also download a [set of images with masks](https://drive.google.com/file/d/1s4mMIkix8gP55CV0srwPjlSOOqJgoOEh/view?usp=sharing), showing the bunny model.
+
+Before you run the code, make sure the following directories and files exist at the root of this repository:
+
+```
+dr-known-geometry/
+|-- images
+|   |-- color
+|   |   \-- (color images go here)
+|   \-- masks
+|       \-- (silhouette masks go here)
+|-- model
+|   \-- (3D model goes here)
+|-- output
+|   \-- (empty for now)
+\-- src
+    |-- env
+    |   \-- (environment maps go here)
+    |-- gamma_correction.py
+    |-- parameter_optimization.py
+    \-- pose_estimation.py
+```
+
+The images and binary masks should also be consistently named. See the sample images linked above for the formatting.
+
+Now you can navigate to `src` and run `python3 parameter_optimization.py model_name`, where `model_name` is the name of your 3D model without the file extension. If you used the right directory structure, the program will automatically find the files it needs. Additional program output will be created in the `output` directory.
