@@ -6,7 +6,7 @@ import os, math, random
 from tqdm import tqdm
 
 # set the initial learning rate for the Adam optimizers
-learning_rate = 0.025
+learning_rate = 0.0025
 
 # define reasonable defaults for the sensor parameters
 default_sensor_fov = 40
@@ -85,11 +85,19 @@ class PoseEstimator:
         mi.set_variant('cuda_ad_mono')
 
         # reload the scene with a differentiable integrator
-        sensor_dicts = [get_sensor_dict(sensor_params, self.ref_shape) for sensor_params in self.poses]
+        sensor_dicts = []
+        shape = self.refs[0][0][0].shape
+
+        while shape[0] > self.ref_shape[0] and shape[1] > self.ref_shape[1]:
+            for sensor_params in self.poses:
+                sensor_dicts.append(get_sensor_dict(sensor_params, shape))
+
+            shape = (shape[0] // 2, shape[1] // 2)
+
         opt_scene = mi.load_dict(get_scene_dict(self.model_path, self.model_type, sensor_dicts=sensor_dicts, differentiable=True))
 
         # optimize the poses for each reference image
-        self.opt_transforms = optimize_poses(opt_scene, self.refs, self.opt_iters)
+        self.opt_transforms = optimize_poses(opt_scene, self.poses, self.refs, self.opt_iters)
 
         # restore the previous mitsuba variant
         mi.set_variant(variant)
@@ -172,7 +180,7 @@ def render_tmplts(scene: 'mi.Scene', tmplt_count: int, tmplt_shape: (int, int)) 
 
     return tmplts
 
-def match_poses(scene: 'mi.Scene', tmplts: list[tuple[tuple['mi.ScalarTransform4f',float,tuple[float,float],float],tuple[tuple[float,float],tuple[float,float],float]]], refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]]) -> list[tuple['mi.ScalarTransform4f',float,tuple[float,float],float]]:
+def match_poses(scene: 'mi.Scene', tmplts: list[tuple[tuple['mi.ScalarTransform4f',float,tuple[float,float],float],tuple[tuple[float,float],tuple[float,float],float]]], refs: list[list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]]]) -> list[tuple['mi.ScalarTransform4f',float,tuple[float,float],float]]:
     """For each reference image, find the most similar template and determine the pose.
 
     Compare the image statistics of the reference images with the statistics of each template.
@@ -187,9 +195,9 @@ def match_poses(scene: 'mi.Scene', tmplts: list[tuple[tuple['mi.ScalarTransform4
     # initialize the progress bar
     with tqdm(total=total_comparisons, desc='Matching templates') as pbar:
 
-        # iterate over all reference images
+        # iterate over all reference images, using the smallest version
         for i in range(len(refs)):
-            ref, ref_stats = refs[i]
+            ref, ref_stats = refs[i][-1]
 
             # access the statistics of the reference image
             ref_com, ref_rot, ref_pixel_ratio = ref_stats
@@ -248,7 +256,7 @@ def match_poses(scene: 'mi.Scene', tmplts: list[tuple[tuple['mi.ScalarTransform4
 
     return poses
 
-def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]], opt_iters: int) -> list['mi.ScalarTransform4f']:
+def optimize_poses(scene: 'mi.Scene', poses: list[tuple['mi.ScalarTransform4f',float,tuple[float,float],float]], refs: list[list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]]], opt_iters: int) -> list['mi.ScalarTransform4f']:
     """Optimize the given poses to more closely match the reference images.
 
     Apply an iterative optimization loop to each pose and each reference image.
@@ -267,40 +275,56 @@ def optimize_poses(scene: 'mi.Scene', refs: list[tuple['mi.TensorXf',tuple[tuple
     # iterate over all reference images
     for i in range(len(refs)):
 
-        # access the reference image
-        ref = refs[i][0]
-
         # initialize the optimizer
         opt = mi.ad.Adam(lr=learning_rate)
 
         # initialize the optimization parameters
         opt['rotation'] = mi.Quaternion4f(0.0, 0.0, 0.0, 1.0)
         opt['translation'] = mi.Point3f(0.0, 0.0, 0.0)
+        opt['fov_scale'] = mi.Float(1.0)
+        opt['ppo'] = mi.Point2f(0.0, 0.0)
 
-        # optimize the rotation and translation of the model
-        with tqdm(range(opt_iters), desc=f'Optimizing view {i+1}/{len(refs)}') as pbar:
-            for j in pbar:
+        iters = opt_iters
 
-                # constrain the optimization parameters
-                opt['rotation'] = dr.normalize(opt['rotation'])
+        for k in range(len(refs[i]) - 1, -1, -1):
 
-                # compute the optimized transform
-                transform = mi.Transform4f().translate(opt['translation']) @ mi.Transform4f(dr.quat_to_matrix(opt['rotation']))
+            # access the reference image
+            ref = refs[i][k][0]
 
-                # transform the model in the scene and update
-                params['model.vertex_positions'] = dr.ravel(transform @ vertex_positions)
-                params.update()
+            # optimize the rotation and translation of the model
+            with tqdm(range(iters), desc=f'Optimizing view {i+1}/{len(refs)}') as pbar:
+                for j in pbar:
 
-                # render the image
-                img = 1 - mi.render(scene=scene, params=params, sensor=i, seed=j)[:, :, 0]
+                    # constrain the optimization parameters
+                    opt['rotation'] = dr.normalize(opt['rotation'])
 
-                # compute the loss and take a gradient descent step
-                loss = dr.mean(dr.square(ref - img))
-                dr.backward(loss)
-                opt.step()
+                    sensor_to_world = params[f'sensor{i}.to_world']
+                    sensor_distance = poses[i][3]
 
-                # add progress information to progress bar description
-                pbar.set_description(f'Optimizing view {i+1}/{len(refs)} (loss: {loss.array[0]:.6f})')
+                    fov_transform = sensor_to_world @ mi.Transform4f().translate((0, 0, sensor_distance)) @ mi.Transform4f().scale((1, 1, opt['fov_scale'])) @ mi.Transform4f().translate((0, 0, -sensor_distance)) @ sensor_to_world.inverse()
+
+                    ppo_transform = sensor_to_world @ mi.Transform4f().translate((-opt['ppo'][0] * sensor_distance, -opt['ppo'][1] * sensor_distance, 0)) @ mi.Transform4f(dr.auto.ad.Matrix4f(1, 0, opt['ppo'][0], 0, 0, 1, opt['ppo'][1], 0, 0, 0, 1, 0, 0, 0, 0, 1)) @ sensor_to_world.inverse()
+
+                    # compute the optimized transform
+                    transform = ppo_transform @ fov_transform @ mi.Transform4f().translate(opt['translation']) @ mi.Transform4f(dr.quat_to_matrix(opt['rotation']))
+
+                    # transform the model in the scene and update
+                    params['model.vertex_positions'] = dr.ravel(transform @ vertex_positions)
+                    params.update()
+
+                    # render the image
+                    sensor_index = i + len(refs) * k
+                    img = 1 - mi.render(scene=scene, params=params, sensor=sensor_index, seed=j)[:, :, 0]
+
+                    # compute the loss and take a gradient descent step
+                    loss = dr.mean(dr.square(ref - img))
+                    dr.backward(loss)
+                    opt.step()
+
+                    # add progress information to progress bar description
+                    pbar.set_description(f'Optimizing view {i+1}/{len(refs)} (loss: {loss.array[0]:.6f})')
+
+            iters = iters // 2
 
         # update the sensor with the optimized pose
         opt_transforms.append(mi.ScalarTransform4f(dr.slice((transform.inverse() @ params[f'sensor{i}.to_world']).matrix, 0)))
@@ -361,7 +385,7 @@ def get_img_stats(img: np.ndarray) -> tuple[tuple[float,float],tuple[float,float
 
     return (com, rot, pixel_ratio)
 
-def get_refs(ref_dir: str, ref_shape: (int, int),nth: int = 1) -> list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]]:
+def get_refs(ref_dir: str, ref_shape: (int, int),nth: int = 1) -> list[list[tuple['mi.TensorXf',tuple[tuple[float,float],tuple[float,float],float]]]]:
     """Load a directory of binary mask references and compute their statistics."""
 
     refs = []
@@ -371,16 +395,27 @@ def get_refs(ref_dir: str, ref_shape: (int, int),nth: int = 1) -> list[tuple['mi
 
     for ref_name in ref_names:
 
+        ref_pyramid = []
+
         # check that the file exists and find its absolute path
         ref_path = os.path.join(ref_dir, ref_name)
         if not os.path.isfile(ref_path): continue
 
-        # open and normalize the reference image, and compute its statistics
-        ref = clean_ref(mi.Bitmap(ref_path), ref_shape)
-        ref_stats = get_img_stats(ref)
+        ref = mi.Bitmap(ref_path)
+        shape = np.array(ref).shape
 
-        # append the reference image and its statistics to the output list
-        refs.append((ref, ref_stats))
+        while shape[0] > ref_shape[0] and shape[1] > ref_shape[1]:
+
+            # open and normalize the reference image, and compute its statistics
+            ref_mask = clean_ref(ref, shape)
+            ref_stats = get_img_stats(ref_mask)
+
+            # append the reference image and its statistics to the output list
+            ref_pyramid.append((ref_mask, ref_stats))
+
+            shape = (shape[0] // 2, shape[1] // 2)
+
+        refs.append(ref_pyramid)
 
     return refs
 
